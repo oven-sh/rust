@@ -20,8 +20,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Cross gcc + glibc for the other Linux architecture, so the LLVM build can produce
 # compiler-rt (ASAN etc.) for it: Bun's CI builds x64 and arm64 Linux from one host.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      $([ "$(dpkg --print-architecture)" = amd64 ] && echo g++-aarch64-linux-gnu || echo g++-x86-64-linux-gnu) \
+      $([ "$(dpkg --print-architecture)" = amd64 ] && echo g++-aarch64-linux-gnu || echo g++-x86-64-linux-gnu) skopeo jq \
     && rm -rf /var/lib/apt/lists/*
+
+# The glibc sysroots Bun's linux-gnu builds compile against (/opt/linux-sysroot-glibc,
+# /opt/linux-sysroot-glibc-arm64: ubuntu:20.04 libc + gcc-13 libstdc++), made the way
+# install_linux_glibc_sysroot() in oven-sh/bun's scripts/bootstrap.sh makes them on the
+# CI image. Needed to train on the Linux cross target; used by the host build too.
+RUN set -e; for sr_arch in x86_64 aarch64; do \
+      case $sr_arch in \
+        x86_64)  sysroot=/opt/linux-sysroot-glibc;       deb_arch=amd64; apt_base=http://archive.ubuntu.com/ubuntu ;; \
+        aarch64) sysroot=/opt/linux-sysroot-glibc-arm64; deb_arch=arm64; apt_base=http://ports.ubuntu.com/ubuntu-ports ;; \
+      esac; \
+      tmp=$(mktemp -d); mkdir -p "$sysroot" "$tmp/img"; \
+      skopeo copy --retry-times 5 --override-os linux --override-arch $deb_arch docker://docker.io/library/ubuntu:20.04 "dir:$tmp/img"; \
+      for d in $(jq -r '.layers[].digest' "$tmp/img/manifest.json" | sed 's/^sha256://'); do tar -xzf "$tmp/img/$d" -C "$sysroot" 2>/dev/null || true; done; \
+      curl -fsSL --retry 8 --retry-all-errors "$apt_base/dists/focal-updates/main/binary-$deb_arch/Packages.gz" "$apt_base/dists/focal/main/binary-$deb_arch/Packages.gz" | gzip -dc > "$tmp/Packages"; \
+      for pkg in libc6 libc6-dev linux-libc-dev libcrypt1 libcrypt-dev; do \
+        path=$(awk -v p=$pkg '$1=="Package:"&&$2==p{f=1} f&&$1=="Filename:"{print $2; exit}' "$tmp/Packages"); \
+        curl -fsSL --retry 8 --retry-all-errors -o "$tmp/pkg.deb" "$apt_base/$path" && dpkg-deb -x "$tmp/pkg.deb" "$sysroot"; \
+      done; \
+      find "$sysroot" -type l | while read -r l; do t=$(readlink "$l"); case $t in /*) ln -sfn "$sysroot$t" "$l" ;; esac; done; \
+      [ -e "$sysroot/lib/$sr_arch-linux-gnu/libc.so.6" ] || { mkdir -p "$sysroot/lib"; ln -sfn "../usr/lib/$sr_arch-linux-gnu" "$sysroot/lib/$sr_arch-linux-gnu"; }; \
+      [ $sr_arch != x86_64 ] || [ -e "$sysroot/lib64" ] || ln -sfn usr/lib/x86_64-linux-gnu "$sysroot/lib64"; \
+      mkdir "$tmp/gcc13" && curl -fsSL --retry 8 --retry-all-errors "https://github.com/oven-sh/WebKit/releases/download/gcc-13-focal-debs/gcc-13-focal-$deb_arch.tar.gz" | tar -xz -C "$tmp/gcc13"; \
+      for deb in "$tmp"/gcc13/*.deb; do dpkg-deb -x "$deb" "$sysroot"; done; \
+      test -d "$sysroot/usr/include/c++/13"; rm -rf "$tmp"; \
+    done
 # CMake: LLVM wants >= 3.20, Bun's build >= 3.24; jammy has 3.22. Same source as Bun's bootstrap.sh.
 RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
       https://github.com/Kitware/CMake/releases/download/v${CMAKE}/cmake-${CMAKE}-linux-$(uname -m).tar.gz \
