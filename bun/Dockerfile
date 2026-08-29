@@ -5,12 +5,12 @@ FROM ubuntu:22.04
 ARG LLVM=21.1.8
 ARG NODE=26.8.1
 ENV DEBIAN_FRONTEND=noninteractive
-# apt.llvm.org and archive.ubuntu.com both drop connections now and then.
+# archive.ubuntu.com drops connections now and then.
 RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg git xz-utils zstd unzip make ninja-build cmake \
-      python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file \
+      python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file libstdc++-12-dev libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt /
