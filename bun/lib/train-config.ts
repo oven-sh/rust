@@ -10,8 +10,6 @@ export interface TrainConfig {
   bunRef: string | undefined;
   /** Scratch space for Bun build directories. */
   trainDir: string;
-  /** rustc sysroot (bin/rustc, bin/cargo) for the clang phase's cargo step; the rust phase gets its compiler from opt-dist. */
-  rustSysroot: string;
   /** LLVM providing clang for the rust phase's C/C++ (Bun's build always configures a C toolchain). */
   hostLlvm: string;
   host: Options["host"];
@@ -24,7 +22,6 @@ export function trainingEnv(o: Options): Record<string, string> {
     bunDir: p.bun,
     bunRef: o.bunDir === undefined ? o.bunRef : undefined,
     trainDir: p.train,
-    rustSysroot: p.rustSysroot,
     hostLlvm: o.hostLlvm,
     host: o.host,
     jobs: o.jobs,

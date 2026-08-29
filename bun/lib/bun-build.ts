@@ -18,10 +18,10 @@ export interface BunBuild {
   jobs: number;
 }
 
-/** BUN_TOOLCHAIN_* as scripts/build/tools.ts in oven-sh/bun reads them. */
+/** BUN_TOOLCHAIN_* as scripts/build/tools.ts in oven-sh/bun reads them; unset = Bun's default (rustup's pinned nightly). */
 export interface Toolchain {
   llvm: string;
-  rust: string;
+  rust?: string;
   cargo?: string;
 }
 

@@ -6,9 +6,13 @@
 //   train.ts clang       from LLVM's perf-training (bun/train-clang): the instrumented clang in CC
 //   train.ts clang-bolt LLVM_DIR
 //                        from lib/llvm.ts with BOLT-instrumented clang/lld installed in LLVM_DIR
-//   train.ts preflight RUST_SYSROOT
-//                        from lib/rust.ts before the long builds: configure Bun for the host and
-//                        every cross target so environment problems surface in minutes
+//   train.ts preflight [RUST_SYSROOT]
+//                        from lib/rust.ts and lib/llvm.ts before the long builds: configure Bun for
+//                        the host and every cross target so environment problems surface in minutes
+//
+// The rust modes compile Bun's C/C++ with the host LLVM; the clang modes compile Bun's Rust
+// with rustup's pinned nightly (same rustc commit as this branch, so the same bitcode reaches
+// lld). That is what lets the two halves build in parallel.
 //
 // Everything else comes from BUN_TRAIN_CONFIG (lib/train-config.ts).
 //
@@ -50,19 +54,19 @@ switch (mode) {
     trainRust();
     break;
   case "clang":
-    trainClang({ llvm: dirname(dirname(requireEnv("CC"))), rust: config.rustSysroot }, true);
+    trainClang({ llvm: dirname(dirname(requireEnv("CC"))) }, true);
     break;
   case "clang-bolt":
-    trainClang({ llvm: requireArg(3, "LLVM_DIR"), rust: config.rustSysroot }, false);
+    trainClang({ llvm: requireArg(3, "LLVM_DIR") }, false);
     break;
   case "preflight": {
-    const toolchain = { llvm: config.hostLlvm, rust: requireArg(3, "RUST_SYSROOT") };
+    const toolchain = { llvm: config.hostLlvm, rust: process.argv[3] };
     bunBuild(b, "preflight", host, ["--profile=debug"], toolchain, null);
     for (const target of [host, ...crossTargets]) bunBuild(b, `preflight-${target.os}-${target.arch}`, target, release, toolchain, null);
     break;
   }
   default:
-    throw new Error(`usage: train.ts rust|clang|clang-bolt LLVM_DIR|preflight RUST_SYSROOT (got ${mode})`);
+    throw new Error(`usage: train.ts rust|clang|clang-bolt LLVM_DIR|preflight [RUST_SYSROOT] (got ${mode})`);
 }
 
 function trainRust(): void {

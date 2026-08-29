@@ -74,6 +74,9 @@ Stages and where they write (under `--build-dir`, default `obj/bun-toolchain/`):
 2. **llvm** → `llvm/` (all three CMake stages), installed to `llvm-install/`
 3. **package** → `out/bun-toolchain-<host>.tar.zst` (after a smoke build of Bun with it)
 
+1 and 2 are independent (clang's training compiles Bun's Rust with rustup's copy of the
+same nightly), so CI runs them in parallel.
+
 Training builds of Bun live in `train/`; the Bun checkout in `bun/`.
 
 ## Files

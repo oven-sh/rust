@@ -26,7 +26,7 @@ const steps: Record<Options["command"], () => void> = {
   llvm: () => buildLlvm(options),
   package: () => packageToolchain(options),
   all: () => {
-    buildRust(options); // first: the LLVM stage's training links Bun, which needs this rustc
+    buildRust(options);
     buildLlvm(options);
     packageToolchain(options);
   },

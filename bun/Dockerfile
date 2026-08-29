@@ -92,6 +92,14 @@ RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://github.com/f
     && CFLAGS=-fPIC make -C /tmp/zstd-${ZSTD} -j"$(nproc)" >/dev/null && make -C /tmp/zstd-${ZSTD} install >/dev/null \
     && rm -rf /tmp/zstd-${ZSTD} && ldconfig
 
+# rustup, no toolchain: the clang/lld training builds Bun before our rustc exists (the two
+# halves build in parallel), so Bun's build installs its pinned nightly through this, as it
+# does on a CI machine. RUSTUP_HOME/CARGO_HOME are left to default to $HOME at run time.
+RUN curl -fsSL --retry 8 --retry-all-errors https://sh.rustup.rs \
+    | RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/rustup sh -s -- -y --default-toolchain none --no-modify-path >/dev/null \
+    && chmod -R a+rX /opt/rustup
+ENV PATH=/opt/rustup/bin:$PATH
+
 # node runs bun/*.ts; bun is what Bun's own build uses for its codegen steps.
 RUN arch=$(dpkg --print-architecture | sed 's/amd64/x64/') \
     && curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-${arch}.tar.xz | tar -xJ -C /usr/local --strip-components=1 \

@@ -14,7 +14,7 @@
 //   clang/utils/perf-training/          (profile collection, BOLT post-link step)
 //   .github/workflows/release-binaries.yml (how it is invoked)
 
-import { copyFileSync, readdirSync } from "node:fs";
+import { chmodSync, copyFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { isDone, markDone, mkdir, remove } from "./fs.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
@@ -95,6 +95,10 @@ export function buildLlvm(o: Options): void {
   }
 
   mkdir(p.llvmBuild);
+  // Before the hours-long part: make sure the training workload configures here.
+  chmodSync(join(o.checkout, "bun", "train.ts"), 0o755);
+  run([join(o.checkout, "bun", "train.ts"), "preflight"], { env: trainingEnv(o) });
+
   run([
     "cmake",
     "-G",
