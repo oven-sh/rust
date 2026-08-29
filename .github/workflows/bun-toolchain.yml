@@ -2,6 +2,10 @@ name: bun-toolchain
 
 # rustc/cargo + clang/lld built from this branch and src/llvm-project, PGO/BOLT
 # trained on compiling Bun. See bun/README.md.
+#
+# Two jobs per host so that a failure in the LLVM half does not throw away the
+# ~2 h rust half: `rust` uploads the installed sysroot, `llvm` downloads it,
+# builds clang/lld (its training links Bun with that rustc) and packages both.
 
 on:
   workflow_dispatch:
@@ -20,51 +24,85 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  TOOLCHAIN_ARGS: ${{ inputs.bun-ref && format('--bun-ref={0}', inputs.bun-ref) || '' }} ${{ inputs.skip-bolt && '--skip-bolt' || '' }}
+  # As the runner's user, so the checkout is trusted by git and outputs are owned
+  # by the steps that upload them; HOME holds cargo/npm/bun caches.
+  IN_CONTAINER: >-
+    docker run --rm -v $PWD:/checkout -w /checkout
+    --user $UID:$GID -e HOME=/checkout/obj/home
+    -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro
+    bun-toolchain-env
+
 jobs:
-  build:
+  rust:
     strategy:
       fail-fast: false
       matrix:
         include:
           - { host: linux-x64, runner: linux-x64-gh }
           - { host: linux-aarch64, runner: linux-arm64-gh }
-    name: ${{ matrix.host }}
+    name: rust ${{ matrix.host }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 720
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          # x.py checks out the library submodules it needs itself; llvm-project is ours.
-          submodules: false
-          fetch-depth: 1
+        with: { submodules: false, fetch-depth: 1 }
       - name: Fetch src/llvm-project
         run: git submodule update --init --depth=1 src/llvm-project
       - name: Build container image
         run: docker build -t bun-toolchain-env bun
-      - name: Build toolchain
-        # As the runner's user, so the checkout is trusted by git and the outputs
-        # are owned by the steps that upload them; HOME holds cargo/npm caches.
-        run: >
-          mkdir -p obj/home &&
-          docker run --rm -v "$PWD:/checkout" -w /checkout
-          --user "$(id -u):$(id -g)" -e HOME=/checkout/obj/home
-          -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro
-          bun-toolchain-env
-          node bun/toolchain.ts all
-          ${{ inputs.bun-ref && format('--bun-ref={0}', inputs.bun-ref) || '' }}
-          ${{ inputs.skip-bolt && '--skip-bolt' || '' }}
+      - name: Build rustc + cargo
+        run: mkdir -p obj/home && GID=$(id -g) && eval "$IN_CONTAINER node bun/toolchain.ts rust $TOOLCHAIN_ARGS"
+      - name: Pack sysroot
+        run: tar --zstd -cf rust-sysroot-${{ matrix.host }}.tar.zst -C obj/bun-toolchain rust-sysroot
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-sysroot-${{ matrix.host }}
+          path: |
+            rust-sysroot-${{ matrix.host }}.tar.zst
+            obj/bun-toolchain/rust/opt-artifacts/*.profdata
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  llvm:
+    needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { host: linux-x64, runner: linux-x64-gh }
+          - { host: linux-aarch64, runner: linux-arm64-gh }
+    name: llvm + package ${{ matrix.host }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { submodules: false, fetch-depth: 1 }
+      - name: Fetch src/llvm-project
+        run: git submodule update --init --depth=1 src/llvm-project
+      - name: Build container image
+        run: docker build -t bun-toolchain-env bun
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: "rust-sysroot-${{ matrix.host }}", path: . }
+      - name: Unpack sysroot
+        run: mkdir -p obj/bun-toolchain obj/home && tar --zstd -xf rust-sysroot-${{ matrix.host }}.tar.zst -C obj/bun-toolchain
+      - name: Build clang + lld
+        run: GID=$(id -g) && eval "$IN_CONTAINER node bun/toolchain.ts llvm $TOOLCHAIN_ARGS"
+      - name: Package
+        run: GID=$(id -g) && eval "$IN_CONTAINER node bun/toolchain.ts package $TOOLCHAIN_ARGS"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bun-toolchain-${{ matrix.host }}
           path: |
             obj/bun-toolchain/out/*.tar.zst
             obj/bun-toolchain/out/*/toolchain.json
-            obj/bun-toolchain/rust/opt-artifacts/*.profdata
           if-no-files-found: error
           compression-level: 0
 
   release:
-    needs: build
+    needs: llvm
     # Off until an artifact has been validated by building Bun with it; flip to publish.
     if: false
     runs-on: ubuntu-latest
@@ -77,10 +115,8 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: bun-toolchain-${{ github.ref_name }}-${{ github.sha }}
         run: |
           tag="bun-toolchain-${GITHUB_REF_NAME}-${GITHUB_SHA::8}"
-          ls -R artifacts
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "$tag" --notes "rustc/cargo + clang/lld for building Bun, from ${GITHUB_SHA}." \
-            artifacts/*/out/*.tar.zst artifacts/*/rust/opt-artifacts/*.profdata
+            artifacts/bun-toolchain-*/out/*.tar.zst artifacts/rust-sysroot-*/obj/bun-toolchain/rust/opt-artifacts/*.profdata

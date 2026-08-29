@@ -175,7 +175,8 @@ export function installDist(o: Options): void {
   mkdir(p.rustSysroot);
   const tarballs = readdirSync(dist).filter(f => f.endsWith(".tar.xz"));
   for (const component of SHIPPED_COMPONENTS) {
-    const tarball = tarballs.find(f => f.startsWith(`${component}-nightly-`) && (component === "rust-src" || f.includes(o.triple)));
+    // rust-src-nightly.tar.xz; everything else is <component>-nightly-<triple>.tar.xz
+    const tarball = tarballs.find(f => f === `${component}-nightly${component === "rust-src" ? "" : `-${o.triple}`}.tar.xz`);
     if (tarball === undefined) throw new Error(`x.py dist did not produce a ${component} tarball in ${dist}`);
     const unpack = join(p.train, "unpack");
     remove(unpack);
