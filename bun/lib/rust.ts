@@ -165,8 +165,7 @@ export function buildRust(o: Options): void {
     { cwd: p.rustBuild, env },
   );
 
-  // 4. install the dist tarballs into one directory: that is both what
-  //    the LLVM stage trains against and what `package` ships.
+  // 4. install the dist tarballs; that directory is what `package` ships.
   installDist(o);
   markDone(p.rustInstall, key);
 }
