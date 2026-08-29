@@ -8,10 +8,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 # archive.ubuntu.com drops connections now and then.
 RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries
 
+ARG CMAKE=3.30.5
+# First line: what building rustc and LLVM needs. Second line: what building Bun
+# (the training workload) additionally needs — the list scripts/bootstrap.sh in
+# oven-sh/bun installs on its CI image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg git xz-utils zstd unzip make ninja-build cmake \
-      python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file binutils libc6-dev libstdc++-12-dev \
+      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file binutils libc6-dev libstdc++-12-dev \
+      build-essential make nasm libtool ruby perl golang-go \
     && rm -rf /var/lib/apt/lists/*
+# CMake: LLVM wants >= 3.20, Bun's build >= 3.24; jammy has 3.22. Same source as Bun's bootstrap.sh.
+RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
+      https://github.com/Kitware/CMake/releases/download/v${CMAKE}/cmake-${CMAKE}-linux-$(uname -m).tar.gz \
+    | tar -xz -C /usr/local --strip-components=1 && cmake --version
 
 # Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt /
 # merge-fdata for the rust pipeline: LLVM's official release binaries (upstream's
@@ -30,5 +38,4 @@ RUN arch=$(dpkg --print-architecture | sed 's/amd64/x64/') \
     && npm install -g bun \
     && node --version && bun --version
 
-# CMake >= 3.20 is required by LLVM; jammy ships 3.22.
 WORKDIR /checkout
