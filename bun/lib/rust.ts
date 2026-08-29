@@ -63,6 +63,16 @@ const runShConfigureArgs = [
 ];
 
 /**
+ * BOLT (x86_64 upstream; off on aarch64 upstream): currently OFF here on both.
+ * llvm-bolt refuses libLLVM.so because the libstdc++.a/libgcc_eh.a it statically
+ * links from the Ubuntu image contain GCC hot/cold-split `.cold` fragments with no
+ * STT_FILE symbols to pair them by; upstream's image builds its own GCC, whose
+ * archives keep them. To turn it back on: build GCC in bun/Dockerfile the way
+ * src/ci/docker/scripts/build-gcc.sh does, then pass `--use-bolt` below.
+ */
+const RUST_BOLT = false;
+
+/**
  * Where this build deliberately differs from upstream. Each entry replaces or
  * removes an upstream argument; nothing here changes how rustc or std are compiled.
  */
@@ -139,7 +149,7 @@ export function buildRust(o: Options): void {
       `--build-dir=${join(p.rustBuild, "build")}`,
       `--artifact-dir=${p.rustArtifacts}`,
       `--training-command=${join(o.checkout, "bun", "train.ts")}`,
-      ...(o.bolt ? ["--use-bolt"] : []),
+      ...(o.bolt && RUST_BOLT ? ["--use-bolt"] : []),
       "--",
       "python3",
       join(o.checkout, "x.py"),
