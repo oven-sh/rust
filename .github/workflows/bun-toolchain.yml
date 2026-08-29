@@ -65,6 +65,8 @@ jobs:
 
   release:
     needs: build
+    # Off until an artifact has been validated by building Bun with it; flip to publish.
+    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
