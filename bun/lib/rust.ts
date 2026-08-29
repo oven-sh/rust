@@ -69,7 +69,7 @@ const runShConfigureArgs = [
  * workload (bun/train.ts instead of rustc-perf), BOLT on aarch64 too (upstream:
  * x86_64 only, "broken as of December 2024" per opt-dist), no post-dist test run,
  * and the host compilers in bun/Dockerfile (upstream: self-built clang 22.1.0, GCC 9's
- * libstdc++.a; here: LLVM's 22.1.8 release binaries, GCC 13's libstdc++.a).
+ * libstdc++.a; here: apt.llvm.org's clang 21, GCC 13's libstdc++.a).
  */
 function bunDeltas(o: Options): { drop: string[]; add: string[] } {
   return {
