@@ -69,7 +69,7 @@ export function parseOptions(argv: string[]): Options {
     buildDir: resolve(take("build-dir") ?? join(checkout, "obj", "bun-toolchain")),
     host,
     triple,
-    hostLlvm: resolve(take("host-llvm") ?? "/usr/lib/llvm-21"),
+    hostLlvm: resolve(take("host-llvm") ?? "/opt/llvm"),
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),
     jobs: Number(take("jobs") ?? availableParallelism()),
@@ -93,7 +93,7 @@ function usage(): never {
 
 options:
   --build-dir=DIR      output root (default: obj/bun-toolchain)
-  --host-llvm=DIR      existing LLVM used to compile everything (default: /usr/lib/llvm-21)
+  --host-llvm=DIR      existing LLVM used to compile everything (default: /opt/llvm)
   --llvm-project=DIR   llvm sources (default: src/llvm-project)
   --bun-ref=SHA        oven-sh/bun commit to train on (default: pinned)
   --bun-dir=DIR        use this Bun checkout instead of cloning --bun-ref

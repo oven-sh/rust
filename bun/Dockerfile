@@ -2,7 +2,7 @@
 # 2.35) is the oldest the resulting toolchain will run on; the Bun binaries built
 # *with* the toolchain are unaffected by it.
 FROM ubuntu:22.04
-ARG LLVM=21
+ARG LLVM=21.1.8
 ARG NODE=26.8.1
 ENV DEBIAN_FRONTEND=noninteractive
 # apt.llvm.org and archive.ubuntu.com both drop connections now and then.
@@ -13,16 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file \
     && rm -rf /var/lib/apt/lists/*
 
-# Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt for the
-# rust pipeline: apt.llvm.org, the same packages Bun's CI installs today.
-RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
-    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM} main" > /etc/apt/sources.list.d/llvm.list \
-    && apt-get update && apt-get install -y --no-install-recommends \
-      clang-${LLVM} lld-${LLVM} llvm-${LLVM} bolt-${LLVM} libclang-rt-${LLVM}-dev \
-    && rm -rf /var/lib/apt/lists/*
-# Unversioned clang/clang++/ld.lld/llvm-* on PATH, as upstream's dist image has (/rustroot/bin)
-# and as rust's `target.*.linker=clang` expects.
-ENV PATH=/usr/lib/llvm-${LLVM}/bin:$PATH CC=clang CXX=clang++
+# Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt /
+# merge-fdata for the rust pipeline: LLVM's official release binaries (upstream's
+# dist image likewise builds against a released clang in /rustroot).
+RUN arch=$(dpkg --print-architecture | sed 's/amd64/X64/; s/arm64/ARM64/') \
+    && curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
+         https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM}/LLVM-${LLVM}-Linux-${arch}.tar.xz \
+       | tar -xJ -C /opt && mv /opt/LLVM-${LLVM}-Linux-${arch} /opt/llvm \
+    && /opt/llvm/bin/clang --version
+# Unversioned clang/clang++/ld.lld/llvm-* on PATH, as rust's `target.*.linker=clang` expects.
+ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
 
 # node runs bun/*.ts; bun is what Bun's own build uses for its codegen steps.
 RUN arch=$(dpkg --print-architecture | sed 's/amd64/x64/') \

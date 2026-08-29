@@ -53,7 +53,7 @@ LLVM install with clang, lld, llvm-profdata and llvm-bolt:
 
 ```sh
 node bun/toolchain.ts probe                      # what will be used
-node bun/toolchain.ts all --host-llvm=/usr/lib/llvm-21
+node bun/toolchain.ts all --host-llvm=/usr/lib/llvm-21   # any LLVM with clang, lld, llvm-profdata, llvm-bolt
 node bun/toolchain.ts rust|llvm|package          # one stage; finished stages are skipped on rerun
 node bun/toolchain.ts all --bun-dir=~/code/bun   # train on a local Bun checkout
 ```
