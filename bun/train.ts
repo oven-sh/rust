@@ -7,8 +7,8 @@
 //   train.ts clang-bolt LLVM_DIR
 //                        from lib/llvm.ts with BOLT-instrumented clang/lld installed in LLVM_DIR
 //   train.ts preflight RUST_SYSROOT
-//                        from lib/rust.ts before the long builds: configure Bun once so
-//                        environment problems surface in minutes
+//                        from lib/rust.ts before the long builds: configure Bun for the host and
+//                        every cross target so environment problems surface in minutes
 //
 // Everything else comes from BUN_TRAIN_CONFIG (lib/train-config.ts).
 //
@@ -55,9 +55,12 @@ switch (mode) {
   case "clang-bolt":
     trainClang({ llvm: requireArg(3, "LLVM_DIR"), rust: config.rustSysroot }, false);
     break;
-  case "preflight":
-    bunBuild(b, "preflight", host, ["--profile=debug"], { llvm: config.hostLlvm, rust: requireArg(3, "RUST_SYSROOT") }, null);
+  case "preflight": {
+    const toolchain = { llvm: config.hostLlvm, rust: requireArg(3, "RUST_SYSROOT") };
+    bunBuild(b, "preflight", host, ["--profile=debug"], toolchain, null);
+    for (const target of [host, ...crossTargets]) bunBuild(b, `preflight-${target.os}-${target.arch}`, target, release, toolchain, null);
     break;
+  }
   default:
     throw new Error(`usage: train.ts rust|clang|clang-bolt LLVM_DIR|preflight RUST_SYSROOT (got ${mode})`);
 }
