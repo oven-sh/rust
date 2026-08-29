@@ -73,7 +73,9 @@ ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
 # required to enable BOLT optimization of the C++ standard library"; distro
 # archives are built with it on and stripped of the FILE symbols llvm-bolt would
 # need to cope. Only the host clang uses this GCC (via the .cfg files below); the
-# clang we ship picks up the system libstdc++ like any other clang.
+# clang we ship picks up the system libstdc++ like any other clang. What the host
+# clang builds needs this libstdc++.so.6 at run time, so it goes first in the
+# loader's search path (00-: ld.so.conf.d is read in name order).
 # Unlike upstream (GCC 9.5, full bootstrap): GCC 13, --disable-bootstrap, apt's
 # gmp/mpfr/mpc — only its libstdc++.a/libgcc reach the shipped binaries.
 ARG GCC=13.3.0
@@ -84,7 +86,8 @@ RUN { curl -fsSL --retry 3 https://ftpmirror.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GC
     && make -j"$(nproc)" >/tmp/gcc-build.log 2>&1 || { tail -100 /tmp/gcc-build.log; exit 1; } \
     && make install >/dev/null && install -Dm644 -t /opt/gcc/share/licenses /tmp/gcc-${GCC}/COPYING3 /tmp/gcc-${GCC}/COPYING.RUNTIME \
     && cd / && rm -rf /tmp/gcc-${GCC} /tmp/gcc-build /tmp/gcc-build.log \
-    && echo /opt/gcc/lib64 > /etc/ld.so.conf.d/opt-gcc.conf && ldconfig \
+    && dirname "$(/opt/gcc/bin/gcc -print-file-name=libstdc++.so.6)" > /etc/ld.so.conf.d/00-opt-gcc.conf && ldconfig \
+    && ldconfig -p | grep -m1 'libstdc++.so.6 ' | grep -q /opt/gcc \
     && printf -- '--gcc-install-dir=%s\n' "$(dirname "$(/opt/gcc/bin/gcc -print-libgcc-file-name)")" | tee /opt/llvm/bin/clang.cfg > /opt/llvm/bin/clang++.cfg \
     && /opt/llvm/bin/clang++ -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC installation: /opt/gcc"
 
