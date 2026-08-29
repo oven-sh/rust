@@ -36,8 +36,10 @@ const b: BunBuild = { bunDir: config.bunDir, outDir: config.trainDir, jobs: conf
 const host: BunTarget = { os: "linux", arch: config.host === "linux-x64" ? "x64" : "aarch64" };
 const otherLinux: BunTarget = { os: "linux", arch: host.arch === "x64" ? "aarch64" : "x64" };
 const crossTargets: BunTarget[] = [otherLinux, { os: "darwin", arch: "aarch64" }, { os: "windows", arch: "x64" }];
-const release = ["--profile=ci-release", "--buildkite=off"];
-const cppOnly = ["--profile=ci-cpp-only", "--buildkite=off"];
+// The profile Bun's CI pipeline builds with (.buildkite/ci.mjs → getBuildArgs), minus the
+// Buildkite artifact uploads. --mode=cpp-only: its C/C++ half only (no cargo, no link).
+const release = ["--profile=ci-build", "--buildkite=off"];
+const cppOnly = [...release, "--mode=cpp-only"];
 
 if (config.bunRef !== undefined) checkoutBun(config.bunDir, config.bunRef);
 else if (!exists(join(config.bunDir, "scripts", "build.ts"))) throw new Error(`--bun-dir ${config.bunDir} is not a Bun checkout`);

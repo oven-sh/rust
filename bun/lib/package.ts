@@ -95,7 +95,7 @@ function smoke(o: Options, root: string): void {
   if (o.bunDir === undefined) checkoutBun(p.bun, o.bunRef);
   const b: BunBuild = { bunDir: p.bun, outDir: p.train, jobs: o.jobs };
   const arch = o.host === "linux-x64" ? "x64" : "aarch64";
-  const dir = bunBuild(b, "smoke", { os: "linux", arch }, ["--profile=ci-release", "--buildkite=off"], { llvm: root, rust: root }, "bun");
+  const dir = bunBuild(b, "smoke", { os: "linux", arch }, ["--profile=ci-build", "--buildkite=off"], { llvm: root, rust: root }, "bun");
   const version = run([join(dir, "bun"), "--version"], { capture: true }).trim();
   console.log(`smoke: built bun ${version} with ${root}`);
 }
