@@ -139,8 +139,6 @@ jobs:
 
   release:
     needs: llvm
-    # Off until an artifact has been validated by building Bun with it; flip to publish.
-    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -148,11 +146,26 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
+      # artifacts/bun-toolchain-<host>/{bun-toolchain-<host>.tar.zst, bun-toolchain-<host>/toolchain.json}
+      # artifacts/rust-sysroot-<host>/{rust-sysroot-<host>.tar.zst, obj/bun-toolchain/rust/opt-artifacts/*.profdata}
+      - name: Collect assets
+        run: |
+          mkdir assets
+          for dir in artifacts/bun-toolchain-*/; do
+            host=$(basename "$dir"); host=${host#bun-toolchain-}
+            cp "$dir"/*.tar.zst assets/
+            cp "$dir"/*/toolchain.json "assets/toolchain-$host.json"
+            for f in artifacts/rust-sysroot-$host/obj/bun-toolchain/rust/opt-artifacts/*.profdata; do
+              cp "$f" "assets/$(basename "${f%.profdata}")-$host.profdata"
+            done
+          done
+          ls -l assets
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="bun-toolchain-${GITHUB_REF_NAME}-${GITHUB_SHA::8}"
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "$tag" --notes "rustc/cargo + clang/lld for building Bun, from ${GITHUB_SHA}." \
-            artifacts/bun-toolchain-*/out/*.tar.zst artifacts/rust-sysroot-*/obj/bun-toolchain/rust/opt-artifacts/*.profdata
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$tag" \
+              --notes "rustc/cargo + clang/lld for building Bun, built from ${GITHUB_SHA} by bun/toolchain.ts. toolchain-<host>.json says what each tarball was built and trained from."
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber assets/*
