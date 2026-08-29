@@ -13,7 +13,7 @@ ARG CMAKE=3.30.5
 # (the training workload) additionally needs — the list scripts/bootstrap.sh in
 # oven-sh/bun installs on its CI image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file binutils libc6-dev libstdc++-12-dev \
+      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file binutils libc6-dev libstdc++-12-dev libxml2 libedit2 libncurses6 \
       build-essential make nasm libtool ruby perl golang-go \
     && rm -rf /var/lib/apt/lists/*
 # CMake: LLVM wants >= 3.20, Bun's build >= 3.24; jammy has 3.22. Same source as Bun's bootstrap.sh.
