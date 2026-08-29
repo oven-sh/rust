@@ -18,7 +18,9 @@ RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/trusted.gp
     && apt-get update && apt-get install -y --no-install-recommends \
       clang-${LLVM} lld-${LLVM} llvm-${LLVM} bolt-${LLVM} libclang-rt-${LLVM}-dev \
     && rm -rf /var/lib/apt/lists/*
-ENV CC=/usr/lib/llvm-${LLVM}/bin/clang CXX=/usr/lib/llvm-${LLVM}/bin/clang++
+# Unversioned clang/clang++/ld.lld/llvm-* on PATH, as upstream's dist image has (/rustroot/bin)
+# and as rust's `target.*.linker=clang` expects.
+ENV PATH=/usr/lib/llvm-${LLVM}/bin:$PATH CC=clang CXX=clang++
 
 # node runs bun/*.ts; bun is what Bun's own build uses for its codegen steps.
 RUN arch=$(dpkg --print-architecture | sed 's/amd64/x64/') \
