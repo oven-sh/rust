@@ -66,7 +66,7 @@ export function packageToolchain(o: Options): string {
   smoke(o, root);
 
   const tarball = join(p.out, `${name}.tar.zst`);
-  run(["tar", "--zstd", "-cf", tarball, "-C", p.out, name], { env: { ZSTD_CLEVEL: "19", ZSTD_NBTHREADS: String(o.jobs) } });
+  run(["tar", "-I", `zstd -19 -T${o.jobs}`, "-cf", tarball, "-C", p.out, name]);
   console.log(`\n${tarball} (${(statSync(tarball).size / 2 ** 20).toFixed(0)} MiB)`);
   return tarball;
 }

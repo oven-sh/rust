@@ -46,7 +46,7 @@ RUN set -e; for sr_arch in x86_64 aarch64; do \
       [ $sr_arch != x86_64 ] || [ -e "$sysroot/lib64" ] || ln -sfn usr/lib/x86_64-linux-gnu "$sysroot/lib64"; \
       mkdir "$tmp/gcc13" && curl -fsSL --retry 8 "https://github.com/oven-sh/WebKit/releases/download/gcc-13-focal-debs/gcc-13-focal-$deb_arch.tar.gz" | tar -xz -C "$tmp/gcc13"; \
       for deb in "$tmp"/gcc13/*.deb; do dpkg-deb -x "$deb" "$sysroot"; done; \
-      test -d "$sysroot/usr/include/c++/13"; rm -rf "$tmp"; \
+      test -f "$sysroot/usr/include/stdio.h" && test -e "$sysroot/lib/$sr_arch-linux-gnu/libc.so.6" && test -d "$sysroot/usr/include/c++/13"; rm -rf "$tmp"; \
     done
 # CMake: LLVM wants >= 3.20, Bun's build >= 3.24; focal has 3.16. Same source as Bun's bootstrap.sh.
 RUN curl -fsSL --retry 8 --retry-delay 5 \
