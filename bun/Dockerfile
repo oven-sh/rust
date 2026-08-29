@@ -10,7 +10,7 @@ RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/ap
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg git xz-utils zstd unzip make ninja-build cmake \
-      python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file libstdc++-12-dev libc6-dev \
+      python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file binutils libc6-dev libstdc++-12-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt /
