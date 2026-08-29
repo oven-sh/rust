@@ -42,8 +42,12 @@ jobs:
       - name: Build container image
         run: docker build -t bun-toolchain-env bun
       - name: Build toolchain
+        # As the runner's user, so the checkout is trusted by git and the outputs
+        # are owned by the steps that upload them; HOME holds cargo/npm caches.
         run: >
+          mkdir -p obj/home &&
           docker run --rm -v "$PWD:/checkout" -w /checkout
+          --user "$(id -u):$(id -g)" -e HOME=/checkout/obj/home
           -e GITHUB_ACTIONS
           bun-toolchain-env
           node bun/toolchain.ts all
