@@ -123,8 +123,8 @@ export function paths(o: Options) {
     rustArtifacts: join(b, "rust", "opt-artifacts"),
     /** dist tarballs produced by `x.py dist` */
     rustDist: join(b, "rust", "build", "dist"),
-    /** the rust dist tarballs installed into one sysroot (input to llvm training and to package) */
-    rustSysroot: join(b, "rust-sysroot"),
+    /** the `x.py dist` tarballs installed with their install.sh: the finished Rust half (what package ships) */
+    rustInstall: join(b, "rust-install"),
     /** cmake binary dir of the Release.cmake multi-stage build */
     llvmBuild: join(b, "llvm"),
     /** `install` of the final LLVM stage */

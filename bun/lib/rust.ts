@@ -119,7 +119,7 @@ function distArgs(o: Options): string[] {
 export function buildRust(o: Options): void {
   const p = paths(o);
   const key = `rust-${RECIPE_VERSION}-${run(["git", "rev-parse", "HEAD"], { cwd: o.checkout, capture: true }).trim()}-bolt=${o.bolt}`;
-  if (isDone(p.rustSysroot, key)) {
+  if (isDone(p.rustInstall, key)) {
     console.log(`rust: up to date (${key})`);
     return;
   }
@@ -165,17 +165,17 @@ export function buildRust(o: Options): void {
     { cwd: p.rustBuild, env },
   );
 
-  // 4. install the dist tarballs into one sysroot: that directory is both what
+  // 4. install the dist tarballs into one directory: that is both what
   //    the LLVM stage trains against and what `package` ships.
   installDist(o);
-  markDone(p.rustSysroot, key);
+  markDone(p.rustInstall, key);
 }
 
 export function installDist(o: Options): void {
   const p = paths(o);
   const dist = p.rustDist;
-  remove(p.rustSysroot);
-  mkdir(p.rustSysroot);
+  remove(p.rustInstall);
+  mkdir(p.rustInstall);
   const tarballs = readdirSync(dist).filter(f => f.endsWith(".tar.xz"));
   for (const component of SHIPPED_COMPONENTS) {
     // rust-src-nightly.tar.xz; everything else is <component>-nightly-<triple>.tar.xz
@@ -187,12 +187,12 @@ export function installDist(o: Options): void {
     run(["tar", "-xJf", join(dist, tarball), "-C", unpack]);
     const [dir] = readdirSync(unpack);
     // Each dist tarball carries rust-installer's install.sh; --prefix installs the component's files.
-    run([join(unpack, dir!, "install.sh"), `--prefix=${p.rustSysroot}`, "--disable-ldconfig"], { capture: true });
+    run([join(unpack, dir!, "install.sh"), `--prefix=${p.rustInstall}`, "--disable-ldconfig"], { capture: true });
     remove(unpack);
   }
-  if (!exists(join(p.rustSysroot, "bin", "rustc"))) throw new Error("rust sysroot install produced no bin/rustc");
+  if (!exists(join(p.rustInstall, "bin", "rustc"))) throw new Error("installing the rust dist tarballs produced no bin/rustc");
   // rust-installer's bookkeeping (install.log, manifests, uninstall.sh); not part of the toolchain
-  for (const f of readdirSync(join(p.rustSysroot, "lib", "rustlib"))) {
-    if (!statSync(join(p.rustSysroot, "lib", "rustlib", f)).isDirectory()) remove(join(p.rustSysroot, "lib", "rustlib", f));
+  for (const f of readdirSync(join(p.rustInstall, "lib", "rustlib"))) {
+    if (!statSync(join(p.rustInstall, "lib", "rustlib", f)).isDirectory()) remove(join(p.rustInstall, "lib", "rustlib", f));
   }
 }

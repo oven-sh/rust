@@ -33,7 +33,7 @@ export function packageToolchain(o: Options): string {
   mkdir(root);
 
   // Both installs are already laid out as bin/ lib/ (share/, licenses/); they do not overlap.
-  for (const install of [p.llvmInstall, p.rustSysroot]) {
+  for (const install of [p.llvmInstall, p.rustInstall]) {
     for (const entry of readdirSync(install)) {
       if (entry === ".done" || entry === "llvm-project.rev") continue;
       cpSync(join(install, entry), join(root, entry), { recursive: true, verbatimSymlinks: true });

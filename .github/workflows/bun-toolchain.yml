@@ -101,13 +101,13 @@ jobs:
           docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
       - name: Build rustc + cargo
         run: mkdir -p obj/home && GID=$(id -g) && eval "$IN_CONTAINER node bun/toolchain.ts rust $TOOLCHAIN_ARGS"
-      - name: Pack sysroot
-        run: tar --zstd -cf rust-sysroot-${{ matrix.host }}.tar.zst -C obj/bun-toolchain rust-sysroot
+      - name: Pack install
+        run: tar --zstd -cf rust-install-${{ matrix.host }}.tar.zst -C obj/bun-toolchain rust-install
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: rust-sysroot-${{ matrix.host }}
+          name: rust-install-${{ matrix.host }}
           path: |
-            rust-sysroot-${{ matrix.host }}.tar.zst
+            rust-install-${{ matrix.host }}.tar.zst
             obj/bun-toolchain/rust/opt-artifacts/*.profdata
           if-no-files-found: error
           compression-level: 0
@@ -168,13 +168,13 @@ jobs:
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with: { name: "rust-sysroot-${{ matrix.host }}", path: . }
+        with: { name: "rust-install-${{ matrix.host }}", path: . }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { name: "llvm-install-${{ matrix.host }}", path: . }
       - name: Unpack
         run: |
           mkdir -p obj/bun-toolchain obj/home
-          tar --zstd -xf rust-sysroot-${{ matrix.host }}.tar.zst -C obj/bun-toolchain
+          tar --zstd -xf rust-install-${{ matrix.host }}.tar.zst -C obj/bun-toolchain
           tar --zstd -xf llvm-install-${{ matrix.host }}.tar.zst -C obj/bun-toolchain
       - name: Package + smoke build
         run: GID=$(id -g) && eval "$IN_CONTAINER node bun/toolchain.ts package $TOOLCHAIN_ARGS"

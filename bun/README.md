@@ -72,7 +72,7 @@ node bun/toolchain.ts all --bun-dir=~/code/bun   # train on a local Bun checkout
 
 Stages and where they write (under `--build-dir`, default `obj/bun-toolchain/`):
 
-1. **rust** → `rust/` (bootstrap build dir, `opt-artifacts/` profiles), installed to `rust-sysroot/`
+1. **rust** → `rust/` (bootstrap build dir, `opt-artifacts/` profiles), installed to `rust-install/`
 2. **llvm** → `llvm/` (all three CMake stages), installed to `llvm-install/`
 3. **package** → `out/bun-toolchain-<host>.tar.zst` (after a smoke build of Bun with it)
 

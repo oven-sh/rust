@@ -7,7 +7,7 @@
 //   train.ts clang       from LLVM's perf-training (bun/train-clang): the instrumented clang in CC
 //   train.ts clang-bolt LLVM_DIR
 //                        from lib/llvm.ts with BOLT-instrumented clang/lld installed in LLVM_DIR
-//   train.ts preflight [RUST_SYSROOT]
+//   train.ts preflight [RUST_DIR]   (a directory with bin/rustc and bin/cargo; default: rustup's)
 //                        from lib/rust.ts and lib/llvm.ts before the long builds: configure Bun for
 //                        the host and every cross target so environment problems surface in minutes
 //
@@ -70,7 +70,7 @@ switch (mode) {
     break;
   }
   default:
-    throw new Error(`usage: train.ts rust|clang|clang-bolt LLVM_DIR|preflight [RUST_SYSROOT] (got ${mode})`);
+    throw new Error(`usage: train.ts rust|clang|clang-bolt LLVM_DIR|preflight [RUST_DIR] (got ${mode})`);
 }
 
 function trainRust(): void {
