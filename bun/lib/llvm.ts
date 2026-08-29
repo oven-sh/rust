@@ -76,8 +76,9 @@ export function releaseOverrides(o: Options): Record<string, string> {
     // deviation: clang, lld (every final-stage executable) allocate with mimalloc instead
     // of glibc malloc — the ThinLTO link runs LLVM's optimizer on every core at once.
     // Release.cmake's own final-stage linker flags (--emit-relocs for BOLT, -znow) are
-    // repeated here because setting the variable pre-empts its set().
-    ...(o.mimalloc ? { BOOTSTRAP_BOOTSTRAP_CMAKE_EXE_LINKER_FLAGS: `-Wl,--emit-relocs,-znow ${o.mimalloc}` } : {}),
+    // repeated here because setting the variable pre-empts its set(). -pthread: mimalloc
+    // uses pthread_key_*, which glibc < 2.34 keeps in libpthread.
+    ...(o.mimalloc ? { BOOTSTRAP_BOOTSTRAP_CMAKE_EXE_LINKER_FLAGS: `-Wl,--emit-relocs,-znow -pthread ${o.mimalloc}` } : {}),
 
     // deviation: no dlopen'd plugin support in clang / LLVM passes. Nothing then has to stay
     // exported from the executables, so ThinLTO can internalize and inline across far more
