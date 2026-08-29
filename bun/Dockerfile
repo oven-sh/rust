@@ -57,10 +57,11 @@ RUN curl -fsSL --retry 8 --retry-delay 5 \
 # merge-fdata for the PGO/BOLT steps: apt.llvm.org's LLVM ${LLVM} for focal (LLVM's own
 # release binaries need glibc 2.34; upstream's dist image builds a clang for this).
 # Laid out as /opt/llvm/bin/{clang,clang++,clang-cl,ld.lld,llvm-*} like a release tarball
-# (clang-cl, which Bun's Windows cross configure looks for, is in clang-tools).
+# (clang-cl, which Bun's Windows cross configure looks for, is in clang-tools; the profile
+# runtime the PGO-instrumented builds link, libclang_rt.profile.a, in libclang-rt-dev).
 RUN curl -fsSL --retry 8 https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg \
     && echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-${LLVM} main" > /etc/apt/sources.list.d/llvm.list \
-    && apt-get update && apt-get install -y --no-install-recommends clang-${LLVM} clang-tools-${LLVM} lld-${LLVM} llvm-${LLVM} bolt-${LLVM} \
+    && apt-get update && apt-get install -y --no-install-recommends clang-${LLVM} clang-tools-${LLVM} libclang-rt-${LLVM}-dev lld-${LLVM} llvm-${LLVM} bolt-${LLVM} \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/lib/llvm-${LLVM} /opt/llvm \
     && /opt/llvm/bin/clang --version && /opt/llvm/bin/llvm-bolt --version | head -2
