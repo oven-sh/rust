@@ -58,11 +58,24 @@ jobs:
       - name: Log in to ghcr.io
         run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Build and push (if missing)
+        id: build
         run: |
           tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
           if docker manifest inspect "$tag" >/dev/null 2>&1; then echo "$tag exists"; exit 0; fi
           docker build -t "$tag" bun
-          docker push "$tag" || echo "::warning::could not push $tag; later jobs will rebuild the image"
+          docker push "$tag" && echo "pushed=true" >> "$GITHUB_OUTPUT" || echo "::warning::could not push $tag; later jobs will rebuild the image"
+      - name: Delete superseded images for this host
+        if: steps.build.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          keep="${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          gh api --paginate "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions" \
+            --jq '.[] | select([.metadata.container.tags[] | endswith("-${{ matrix.host }}")] | any) | select(.metadata.container.tags | index("'"$keep"'") | not) | .id' |
+          while read -r id; do
+            echo "deleting package version $id"
+            gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions/$id" || true
+          done
 
   rust:
     needs: image
