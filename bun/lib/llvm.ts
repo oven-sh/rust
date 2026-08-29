@@ -62,6 +62,8 @@ export function releaseOverrides(o: Options): Record<string, string> {
     CMAKE_INSTALL_PREFIX: p.llvmInstall, // the bootstrap forwards this one itself
     // Upstream builds every backend; Bun targets x86_64 and aarch64.
     ...everyStage("LLVM_TARGETS_TO_BUILD", "X86;AArch64"),
+    // llvm-mt and lld-link's manifest merging need it; fail at configure rather than ship without.
+    ...everyStage("LLVM_ENABLE_LIBXML2", "FORCE_ON"),
     ...everyStage("LLVM_PARALLEL_LINK_JOBS", String(Math.max(1, Math.floor(o.jobs / 8)))),
 
     // The instrumented and the final stage are compiled for the same -march so the
@@ -97,11 +99,11 @@ export function releaseOverrides(o: Options): Record<string, string> {
 
     // The training workload, for the instrumented stage (BOOTSTRAP_ = second stage).
     BOOTSTRAP_CLANG_PGO_TRAINING_DATA_SOURCE_DIR: join(o.checkout, "bun", "train-clang"),
-    // Bun's build needs these next to the instrumented clang it is pointed at, on top of
-    // what perf-training builds for an external project anyway (clang, lld, llvm-ar/ranlib/
-    // nm/objcopy/objdump/strip/readelf): llvm-lib and llvm-rc/llvm-mt for the Windows
-    // target, dsymutil for macOS.
-    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "llvm-lib;llvm-rc;llvm-mt;dsymutil",
+    // Everything Bun's build looks for next to the instrumented clang it is pointed at
+    // (scripts/build/tools.ts; llvm-lib/llvm-rc/llvm-mt for the Windows target, dsymutil for
+    // macOS). Listed in full: the outer ninja must have built them before the training
+    // command starts its own nested build in the same tree.
+    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "lld;llvm-config;llvm-ar;llvm-ranlib;llvm-lib;llvm-nm;llvm-objcopy;llvm-objdump;llvm-strip;llvm-readelf;llvm-symbolizer;llvm-profdata;llvm-rc;llvm-mt;dsymutil",
   };
 }
 

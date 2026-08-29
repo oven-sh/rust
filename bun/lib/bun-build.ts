@@ -28,7 +28,8 @@ export interface Toolchain {
 /**
  * Configure a Bun build directory `name` for `target` with scripts/build.ts `args`,
  * then build `ninjaTarget` in it ("default": what `bun run build` would; null:
- * configure only). Returns the directory.
+ * configure only). Returns the directory; callers that are done with it remove it
+ * (a release build tree is several GB and there are a dozen of them).
  */
 export function bunBuild(b: BunBuild, name: string, target: BunTarget, args: string[], toolchain: Toolchain, ninjaTarget: string | null): string {
   const dir = join(b.outDir, name);
@@ -44,9 +45,12 @@ export function bunBuild(b: BunBuild, name: string, target: BunTarget, args: str
     CFLAGS: undefined,
     CXXFLAGS: undefined,
     LDFLAGS: undefined,
+    CCACHE_DISABLE: "1",
   };
+  // One download cache (WebKit prebuilt, SDKs, sysroots) for all build directories; a ci
+  // profile would otherwise keep a private one per build directory.
   run(
-    [process.execPath, join(b.bunDir, "scripts", "build.ts"), ...args, `--os=${target.os}`, `--arch=${target.arch}`, `--buildDir=${dir}`, "--configure-only"],
+    [process.execPath, join(b.bunDir, "scripts", "build.ts"), ...args, `--os=${target.os}`, `--arch=${target.arch}`, `--buildDir=${dir}`, `--cacheDir=${join(b.outDir, "cache")}`, "--configure-only"],
     { cwd: b.bunDir, env },
   );
   if (ninjaTarget !== null) ninja(b, dir, ninjaTarget);

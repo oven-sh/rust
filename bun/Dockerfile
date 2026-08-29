@@ -2,7 +2,7 @@
 # 2.35) is the oldest the resulting toolchain will run on; the Bun binaries built
 # *with* the toolchain are unaffected by it.
 FROM ubuntu:22.04
-ARG LLVM=21.1.8
+ARG LLVM=22.1.8
 ARG NODE=26.8.1
 ARG BUN=1.4.0
 ENV DEBIAN_FRONTEND=noninteractive
@@ -74,7 +74,7 @@ ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
 # Unlike upstream (GCC 9.5, full bootstrap): GCC 13, --disable-bootstrap, apt's
 # gmp/mpfr/mpc — only its libstdc++.a/libgcc reach the shipped binaries.
 ARG GCC=13.3.0
-RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://ftp.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GCC}.tar.xz | tar -xJ -C /tmp \
+RUN { curl -fsSL --retry 3 --retry-all-errors https://ftpmirror.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GCC}.tar.xz || curl -fsSL --retry 5 --retry-all-errors https://ftp.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GCC}.tar.xz; } | tar -xJ -C /tmp \
     && mkdir /tmp/gcc-build && cd /tmp/gcc-build \
     && /tmp/gcc-${GCC}/configure --prefix=/opt/gcc --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
          --disable-gnu-unique-object --enable-cxx-flags=-fno-reorder-blocks-and-partition >/dev/null \

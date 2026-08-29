@@ -65,7 +65,8 @@ switch (mode) {
   case "preflight": {
     const toolchain = { llvm: config.hostLlvm, rust: process.argv[3] };
     bunBuild(b, "preflight", host, ["--profile=debug"], toolchain, null);
-    for (const target of [host, ...crossTargets]) bunBuild(b, `preflight-${target.os}-${target.arch}`, target, release, toolchain, null);
+    for (const target of [host, ...crossTargets]) remove(bunBuild(b, `preflight-${target.os}-${target.arch}`, target, release, toolchain, null));
+    remove(join(config.trainDir, "preflight"));
     break;
   }
   default:
@@ -89,12 +90,13 @@ function trainRust(): void {
     } finally {
       write(edited, original);
     }
+    remove(dir);
   }
   if (profiles.includes("Opt")) {
-    bunBuild(b, "rust-release-lto", host, release, toolchain, "bun-rust");
-    bunBuild(b, "rust-release", host, [...release, "--lto=off"], toolchain, "bun-rust");
+    remove(bunBuild(b, "rust-release-lto", host, release, toolchain, "bun-rust"));
+    remove(bunBuild(b, "rust-release", host, [...release, "--lto=off"], toolchain, "bun-rust"));
     for (const target of bolt ? [] : crossTargets) {
-      bunBuild(b, `rust-release-lto-${target.os}-${target.arch}`, target, release, toolchain, "bun-rust");
+      remove(bunBuild(b, `rust-release-lto-${target.os}-${target.arch}`, target, release, toolchain, "bun-rust"));
     }
   }
   if (profiles.includes("Doc")) {
@@ -106,11 +108,11 @@ function trainRust(): void {
 }
 
 function trainClang(toolchain: Toolchain, cross: boolean): void {
-  bunBuild(b, "clang-release-lto", host, release, toolchain, "bun");
+  remove(bunBuild(b, "clang-release-lto", host, release, toolchain, "bun"));
   if (!cross) return;
   for (const target of crossTargets) {
     // cpp-only: every C/C++ translation unit for that target, archived; no cargo, no link.
-    bunBuild(b, `clang-cpp-${target.os}-${target.arch}`, target, cppOnly, toolchain, "default");
+    remove(bunBuild(b, `clang-cpp-${target.os}-${target.arch}`, target, cppOnly, toolchain, "default"));
   }
 }
 

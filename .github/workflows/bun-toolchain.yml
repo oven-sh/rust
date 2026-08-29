@@ -72,7 +72,7 @@ jobs:
         run: |
           keep="${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
           gh api --paginate "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions" \
-            --jq '.[] | select([.metadata.container.tags[] | endswith("-${{ matrix.host }}")] | any) | select(.metadata.container.tags | index("'"$keep"'") | not) | .id' |
+            --jq '.[] | select((.metadata.container.tags | length == 0) or ([.metadata.container.tags[] | endswith("-${{ matrix.host }}")] | any)) | select(.metadata.container.tags | index("'"$keep"'") | not) | .id' |
           while read -r id; do
             echo "deleting package version $id"
             gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions/$id" || true

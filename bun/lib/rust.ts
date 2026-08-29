@@ -68,8 +68,8 @@ const runShConfigureArgs = [
  * change the shipped binaries and say how. Beyond this list: the PGO/BOLT training
  * workload (bun/train.ts instead of rustc-perf), BOLT on aarch64 too (upstream:
  * x86_64 only, "broken as of December 2024" per opt-dist), no post-dist test run,
- * and the host compilers in bun/Dockerfile (upstream: self-built clang, GCC 9's
- * libstdc++.a; here: LLVM's release clang, GCC 13's libstdc++.a).
+ * and the host compilers in bun/Dockerfile (upstream: self-built clang 22.1.0, GCC 9's
+ * libstdc++.a; here: LLVM's 22.1.8 release binaries, GCC 13's libstdc++.a).
  */
 function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
   // deviation (x64): upstream targets baseline x86-64; ours needs x86-64-v3 (Haswell,
@@ -98,7 +98,9 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
       "--set llvm.experimental-targets=",
       ...(march ? [`--set llvm.cflags=-march=${march}`, `--set llvm.cxxflags=-march=${march}`] : []),
     ],
-    env: march ? { RUSTFLAGS: `-Ctarget-cpu=${march}`, [`CFLAGS_${o.triple.replaceAll("-", "_")}`]: `-march=${march}` } : {},
+    env: march
+      ? { RUSTFLAGS: `-Ctarget-cpu=${march}`, [`CFLAGS_${o.triple.replaceAll("-", "_")}`]: `-march=${march}`, [`CXXFLAGS_${o.triple.replaceAll("-", "_")}`]: `-march=${march}` }
+      : {},
   };
 }
 
@@ -124,7 +126,7 @@ function distArgs(o: Options): string[] {
 
 export function buildRust(o: Options): void {
   const p = paths(o);
-  const key = `rust-${RECIPE_VERSION}-${run(["git", "rev-parse", "HEAD"], { cwd: o.checkout, capture: true }).trim()}`;
+  const key = `rust-${RECIPE_VERSION}-${run(["git", "rev-parse", "HEAD"], { cwd: o.checkout, capture: true }).trim()}-bolt=${o.bolt}`;
   if (isDone(p.rustSysroot, key)) {
     console.log(`rust: up to date (${key})`);
     return;
