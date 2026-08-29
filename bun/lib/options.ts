@@ -1,6 +1,5 @@
 // Command line and fixed inputs of the toolchain build.
 
-import { existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -86,9 +85,6 @@ export function parseOptions(argv: string[]): Options {
   if (args.size > 0) {
     console.error(`unknown option(s): ${[...args.keys()].map(k => `--${k}`).join(", ")}`);
     usage();
-  }
-  if (options.mimalloc !== undefined && !existsSync(options.mimalloc)) {
-    throw new Error(`--mimalloc: ${options.mimalloc} does not exist (bun/Dockerfile builds it; pass --mimalloc=none to use the libc allocator)`);
   }
   if (options.bunDir === undefined && !/^[0-9a-f]{40}$/.test(options.bunRef)) {
     throw new Error(`--bun-ref must be a full 40-character commit sha (it is fetched shallowly by sha), got ${options.bunRef}`);

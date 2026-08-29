@@ -17,7 +17,7 @@
 
 import { chmodSync, copyFileSync, cpSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { isDone, markDone, mkdir, remove, write } from "./fs.ts";
+import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
@@ -113,6 +113,9 @@ export function buildLlvm(o: Options): void {
     return;
   }
 
+  if (o.mimalloc !== undefined && !exists(o.mimalloc)) {
+    throw new Error(`--mimalloc: ${o.mimalloc} does not exist (bun/Dockerfile builds it; pass --mimalloc=none to use the libc allocator)`);
+  }
   mkdir(p.llvmBuild);
   // Before the hours-long part: make sure the training workload configures here.
   chmodSync(join(o.checkout, "bun", "train.ts"), 0o755);
@@ -141,7 +144,8 @@ export function buildLlvm(o: Options): void {
   if (o.bolt) boltWithBun(o);
   // For package.ts, so that job needs no llvm-project checkout.
   for (const [name, src] of Object.entries(LLVM_LICENSES)) cpSync(join(o.llvmProject, src), join(p.llvmInstall, "licenses", name));
-  if (o.mimalloc) cpSync(join(o.mimalloc, "..", "LICENSE"), join(p.llvmInstall, "licenses", "mimalloc-LICENSE"));
+  const mimallocLicense = o.mimalloc && join(o.mimalloc, "..", "LICENSE"); // where bun/Dockerfile puts it
+  if (mimallocLicense && exists(mimallocLicense)) cpSync(mimallocLicense, join(p.llvmInstall, "licenses", "mimalloc-LICENSE"));
   write(join(p.llvmInstall, "llvm-project.rev"), llvmRev + "\n");
   markDone(p.llvmInstall, key);
 }

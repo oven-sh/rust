@@ -100,7 +100,7 @@ ARG MIMALLOC=3.4.5
 RUN curl -fsSL --retry 8 --retry-all-errors https://github.com/microsoft/mimalloc/archive/refs/tags/v${MIMALLOC}.tar.gz | tar -xz -C /tmp \
     && cmake -G Ninja -S /tmp/mimalloc-${MIMALLOC} -B /tmp/mimalloc-build -DCMAKE_BUILD_TYPE=Release \
          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-         -DMI_OVERRIDE=ON -DMI_BUILD_OBJECT=ON -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=OFF -DMI_BUILD_TESTS=OFF >/dev/null \
+         -DMI_OVERRIDE=ON -DMI_BUILD_OBJECT=ON -DMI_BUILD_STATIC=ON -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF >/dev/null \
     && ninja -C /tmp/mimalloc-build >/dev/null \
     && install -Dm644 /tmp/mimalloc-build/mimalloc.o /opt/mimalloc/mimalloc.o \
     && install -Dm644 /tmp/mimalloc-${MIMALLOC}/LICENSE /opt/mimalloc/LICENSE \
