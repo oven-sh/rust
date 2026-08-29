@@ -112,6 +112,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+          overwrite: true
 
   llvm:
     needs: image
@@ -145,6 +146,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+          overwrite: true
 
   package:
     needs: [rust, llvm]
@@ -160,15 +162,15 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with: { submodules: false, fetch-depth: 1 }
-      - name: Fetch src/llvm-project
-        run: git submodule update --init --depth=1 src/llvm-project # license files, commit for toolchain.json
       - name: Container image
         run: |
           tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with: { pattern: "*-${{ matrix.host }}", path: ., merge-multiple: true }
+        with: { name: "rust-sysroot-${{ matrix.host }}", path: . }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: "llvm-install-${{ matrix.host }}", path: . }
       - name: Unpack
         run: |
           mkdir -p obj/bun-toolchain obj/home
@@ -184,6 +186,7 @@ jobs:
             obj/bun-toolchain/out/*/toolchain.json
           if-no-files-found: error
           compression-level: 0
+          overwrite: true
 
   release:
     needs: package
@@ -193,6 +196,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: bun-toolchain-*
           path: artifacts
       # artifacts/bun-toolchain-<host>/{bun-toolchain-<host>.tar.zst, bun-toolchain-<host>/toolchain.json}
       - name: Collect assets

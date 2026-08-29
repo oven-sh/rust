@@ -2,7 +2,8 @@
 // The PGO/BOLT training workload: build Bun with the compiler being profiled.
 //
 //   train.ts [rust]      from opt-dist (--training-command): rustc/cargo in OPT_DIST_*, plus
-//                        OPT_DIST_PROFILES saying which rustc-perf profiles the phase wants
+//                        OPT_DIST_PROFILES (which rustc-perf profiles the step wants) and
+//                        OPT_DIST_PHASE (pgo | bolt)
 //   train.ts clang       from LLVM's perf-training (bun/train-clang): the instrumented clang in CC
 //   train.ts clang-bolt LLVM_DIR
 //                        from lib/llvm.ts with BOLT-instrumented clang/lld installed in LLVM_DIR
@@ -26,7 +27,9 @@
 //   clang  a full release build + LTO link for the host (clang, lld's LTO backend for both the
 //          C++ and the Rust bitcode), then C++-only compiles for the targets Bun's CI
 //          cross-builds from Linux: the other Linux arch, macOS arm64, Windows x64.
-//   clang-bolt  the host release build + link only (BOLT-instrumented binaries are slow).
+//   BOLT phases (rust with OPT_DIST_PHASE=bolt, clang-bolt): the host release builds only —
+//          BOLT-instrumented binaries are several times slower, and code layout needs the
+//          hot paths, not coverage.
 
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -73,9 +76,10 @@ function trainRust(): void {
   const rustc = requireEnv("OPT_DIST_RUSTC");
   const cargo = requireEnv("OPT_DIST_CARGO");
   const profiles = requireEnv("OPT_DIST_PROFILES").split(",");
+  const bolt = requireEnv("OPT_DIST_PHASE") === "bolt";
   const toolchain: Toolchain = { llvm: config.hostLlvm, rust: dirname(dirname(rustc)), cargo };
 
-  if (profiles.includes("Debug")) {
+  if (profiles.includes("Debug") && !bolt) {
     const dir = bunBuild(b, "rust-debug", host, ["--profile=debug"], toolchain, "bun-rust");
     const edited = join(config.bunDir, "src", "runtime", "lib.rs");
     const original = read(edited);
@@ -89,7 +93,7 @@ function trainRust(): void {
   if (profiles.includes("Opt")) {
     bunBuild(b, "rust-release-lto", host, release, toolchain, "bun-rust");
     bunBuild(b, "rust-release", host, [...release, "--lto=off"], toolchain, "bun-rust");
-    for (const target of crossTargets) {
+    for (const target of bolt ? [] : crossTargets) {
       bunBuild(b, `rust-release-lto-${target.os}-${target.arch}`, target, release, toolchain, "bun-rust");
     }
   }

@@ -77,6 +77,8 @@ fn custom_training_command(
         .env("OPT_DIST_RUSTDOC", rustdoc.as_str())
         .env("OPT_DIST_CARGO", env.cargo_stage_0().as_str())
         .env("OPT_DIST_PROFILES", &profiles.join(","))
+        // "pgo" while gathering PGO profiles, "bolt" while gathering BOLT profiles
+        .env("OPT_DIST_PHASE", "pgo")
         .env("OPT_DIST_SCENARIOS", &scenarios.join(","))
         .env("RUSTC_BOOTSTRAP", "1")
 }
@@ -253,6 +255,7 @@ pub fn gather_bolt_profiles(
 ) -> anyhow::Result<BoltProfile> {
     log::info!("Running benchmarks with BOLT instrumented {name}");
 
+    let benchmarks = benchmarks.env("OPT_DIST_PHASE", "bolt");
     with_log_group("Running benchmarks", || {
         benchmarks.run().with_context(|| "Cannot gather {name} BOLT profiles")
     })?;

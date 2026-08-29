@@ -11,7 +11,7 @@ built against — and both are built with their upstream release recipes:
 
 | | upstream recipe | what we change |
 |---|---|---|
-| rustc, cargo | `src/ci/docker/host-*/dist-*-linux` + `src/tools/opt-dist` (how rustup's binaries are made: PGO'd LLVM, PGO'd rustc, BOLT on x86_64) | profiles gathered by compiling Bun instead of rustc-perf (`opt-dist --training-command`); LLVM linked into `librustc_driver` statically; BOLT on aarch64 too; x64 built for x86-64-v3; only the components Bun uses are dist'ed; docs are not built |
+| rustc, cargo | `src/ci/docker/host-*/dist-*-linux` + `src/tools/opt-dist` (how rustup's binaries are made: PGO'd LLVM, PGO'd rustc, BOLT on x86_64) | profiles gathered by compiling Bun instead of rustc-perf (`opt-dist --training-command`); BOLT on aarch64 too; x64 built for x86-64-v3; rustc's LLVM has only the X86 and AArch64 backends; only the components Bun uses are dist'ed; docs, the cranelift backend and the post-dist test run are skipped; host compilers are LLVM's release clang and a GCC 13 libstdc++ rather than upstream's self-built clang and GCC 9 |
 | clang, lld | `clang/cmake/caches/Release.cmake` (how LLVM's release tarballs are made: 3-stage PGO + ThinLTO, clang BOLTed on Linux) | the PGO training project is a Bun build (host + the cross targets Bun's CI builds); clang **and lld** BOLTed with a Bun build instead of the built-in perf-training suite; no compiler-plugin support (lets LTO internalize more); x64 built for x86-64-v3; only the `clang`, `lld`, `bolt` projects and the `compiler-rt` runtime; only the X86 and AArch64 backends; compiler-rt additionally built for the other Linux architecture |
 
 The exact upstream arguments and each deviation are spelled out in
@@ -28,19 +28,20 @@ Layout:
 ```
 bun-toolchain-linux-x64/
   bin/            clang clang++ clang-cl ld.lld ld64.lld lld-link llvm-ar llvm-objcopy … rustc cargo rustdoc rustfmt cargo-clippy cargo-miri
-  lib/            clang/<ver>/ (headers; compiler-rt for x86_64 and aarch64 linux) · librustc_driver-*.so · rustlib/
+  lib/            clang/<ver>/ (headers; compiler-rt for x86_64 and aarch64 linux) · librustc_driver-*.so · libLLVM.so · rustlib/
   licenses/
   toolchain.json  commits it was built from and trained on, and the configure / cmake arguments used
 ```
 
-The `llvm + package` job ends by building Bun with the packaged toolchain and
-running `bun --version`; nothing is uploaded if that fails.
+The `package` job ends by building Bun with the packaged toolchain and running
+`bun --version`; nothing is uploaded if that fails.
 
 To run it a host needs glibc ≥ 2.35 and libstdc++ ≥ 12 (Ubuntu 22.04 / Debian 12
 or newer), zlib and libxml2; the linux-x64 one also an x86-64-v3 CPU (Haswell /
-Excavator or newer). rustc, cargo and the rustlib tools link LLVM, libstdc++ and
-zstd statically; clang and lld link libstdc++, zlib and libxml2 dynamically, as
-LLVM's own release binaries do.
+Excavator or newer) — and so do debug builds of Bun made with it, since those link
+its prebuilt std. rustc's libLLVM.so links libstdc++ and zstd statically; clang and
+lld link libstdc++, zlib and libxml2 dynamically, as the respective upstream release
+binaries do.
 
 Bun's build uses it via `BUN_TOOLCHAIN_LLVM` / `BUN_TOOLCHAIN_RUST`
 (`scripts/build/tools.ts` in oven-sh/bun).

@@ -10,7 +10,7 @@
 //   src/ci/github-actions/jobs.yml                            (CODEGEN_BACKENDS=llvm,cranelift)
 //   src/tools/opt-dist                                        (the PGO/BOLT pipeline)
 
-import { chmodSync, readdirSync } from "node:fs";
+import { chmodSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove } from "./fs.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
@@ -56,7 +56,6 @@ const runShConfigureArgs = [
   "--dist-compression-formats=xz",
   "--set rust.lld=true",
   "--set build.optimized-compiler-builtins",
-  "--disable-dist-src", // DIST_SRC is set only on x86_64; source tarballs are irrelevant here either way
   "--release-channel=nightly",
   "--enable-llvm-static-stdcpp",
   "--debuginfo-level-std=1",
@@ -64,44 +63,42 @@ const runShConfigureArgs = [
 ];
 
 /**
- * BOLT. Upstream: libLLVM.so + librustc_driver.so, x86_64 only (aarch64 has a FIXME:
- * "Enable bolt for aarch64 once it's fixed upstream. Broken as of December 2024",
- * opt-dist main.rs). Here: both hosts, and since LLVM is linked into
- * librustc_driver.so statically (below) that one library is what gets BOLTed.
- * --skip-bolt turns it off.
- */
-const rustBolt = (o: Options): boolean => o.bolt;
-
-/**
  * Where this build differs from upstream. "build only" entries change what gets
  * built or how the build runs, not the compiler that comes out; "deviation" entries
- * do change the shipped binaries and say how.
+ * change the shipped binaries and say how. Beyond this list: the PGO/BOLT training
+ * workload (bun/train.ts instead of rustc-perf), BOLT on aarch64 too (upstream:
+ * x86_64 only, "broken as of December 2024" per opt-dist), no post-dist test run,
+ * and the host compilers in bun/Dockerfile (upstream: self-built clang, GCC 9's
+ * libstdc++.a; here: LLVM's release clang, GCC 13's libstdc++.a).
  */
 function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
   // deviation (x64): upstream targets baseline x86-64; ours needs x86-64-v3 (Haswell,
-  // 2013+), for rustc, its LLVM, cargo and the host std alike.
+  // 2013+). Applies to rustc, its LLVM and jemalloc, cargo, and the shipped host
+  // rust-std (which Bun links only in debug builds; release rebuilds std).
   const march = o.host === "linux-x64" ? "x86-64-v3" : undefined;
   return {
     drop: [
       "--enable-sccache", // build only: upstream's S3-backed compiler cache
       "--enable-compiler-docs", // build only: rustc API docs
       "--disable-manage-submodules", // build only: upstream CI pre-clones every submodule; let bootstrap fetch what it needs
-      "--set llvm.link-shared=true", // deviation: see link-shared=false below
+      "--set rust.codegen-backends=llvm,cranelift", // build only: cranelift is a separate component we do not ship
+      "--set dist.compression-profile=balanced", // build only: see =fast below
     ],
     add: [
       "--disable-docs", // build only
+      "--disable-dist-src", // build only (upstream x86_64 also produces the source tarball)
+      "--set dist.compression-profile=fast", // build only: the tarballs are unpacked again right away
       `--set build.build-dir=${paths(o).rustBuild}/build`, // build only
       // build only: upstream gets these from the Docker image's environment
       `--set target.${o.triple}.cc=${o.hostLlvm}/bin/clang`,
       `--set target.${o.triple}.cxx=${o.hostLlvm}/bin/clang++`,
-      // deviation: LLVM linked into librustc_driver.so statically rather than as
-      // libLLVM.so (upstream: shared, "to avoid re-doing ThinLTO with each stage").
-      // One fewer DSO boundary on every rustc→LLVM call; costs build time here.
-      "--set llvm.link-shared=false",
+      // deviation: only the backends Bun targets (upstream: all of them + experimental).
+      // Smaller libLLVM.so to load, LTO and BOLT.
+      "--set llvm.targets=AArch64;X86",
+      "--set llvm.experimental-targets=",
       ...(march ? [`--set llvm.cflags=-march=${march}`, `--set llvm.cxxflags=-march=${march}`] : []),
     ],
-    // deviation (x64): -Ctarget-cpu for everything bootstrap compiles with rustc.
-    env: march ? { RUSTFLAGS: `-Ctarget-cpu=${march}` } : {},
+    env: march ? { RUSTFLAGS: `-Ctarget-cpu=${march}`, [`CFLAGS_${o.triple.replaceAll("-", "_")}`]: `-march=${march}` } : {},
   };
 }
 
@@ -165,8 +162,7 @@ export function buildRust(o: Options): void {
       `--build-dir=${join(p.rustBuild, "build")}`,
       `--artifact-dir=${p.rustArtifacts}`,
       `--training-command=${join(o.checkout, "bun", "train.ts")}`,
-      "--llvm-shared=false",
-      ...(rustBolt(o) ? ["--use-bolt"] : []),
+      ...(o.bolt ? ["--use-bolt"] : []),
       "--",
       "python3",
       join(o.checkout, "x.py"),
@@ -199,6 +195,11 @@ export function installDist(o: Options): void {
     const [dir] = readdirSync(unpack);
     // Each dist tarball carries rust-installer's install.sh; --prefix installs the component's files.
     run([join(unpack, dir!, "install.sh"), `--prefix=${p.rustSysroot}`, "--disable-ldconfig"], { capture: true });
+    remove(unpack);
   }
   if (!exists(join(p.rustSysroot, "bin", "rustc"))) throw new Error("rust sysroot install produced no bin/rustc");
+  // rust-installer's bookkeeping (install.log, manifests, uninstall.sh); not part of the toolchain
+  for (const f of readdirSync(join(p.rustSysroot, "lib", "rustlib"))) {
+    if (!statSync(join(p.rustSysroot, "lib", "rustlib", f)).isDirectory()) remove(join(p.rustSysroot, "lib", "rustlib", f));
+  }
 }

@@ -71,7 +71,8 @@ ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
 # archives are built with it on and stripped of the FILE symbols llvm-bolt would
 # need to cope. Only the host clang uses this GCC (via the .cfg files below); the
 # clang we ship picks up the system libstdc++ like any other clang.
-# Not shipped, so unlike upstream: a current GCC, --disable-bootstrap, apt's gmp/mpfr/mpc.
+# Unlike upstream (GCC 9.5, full bootstrap): GCC 13, --disable-bootstrap, apt's
+# gmp/mpfr/mpc — only its libstdc++.a/libgcc reach the shipped binaries.
 ARG GCC=13.3.0
 RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://ftp.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GCC}.tar.xz | tar -xJ -C /tmp \
     && mkdir /tmp/gcc-build && cd /tmp/gcc-build \

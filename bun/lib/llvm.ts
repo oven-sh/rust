@@ -5,21 +5,35 @@
 //     → bun/train-clang → bun/train.ts clang);
 //   - BOLT: Release.cmake would BOLT `clang` with clang/utils/perf-training's small
 //     built-in lit suite. We turn that off and, after install, BOLT both `clang` and
-//     `lld` with a Bun build as the workload (same llvm-bolt flags as
+//     `lld` with a Bun build as the workload (host llvm-bolt; same flags as
 //     clang/utils/perf-training/perf-helper.py bolt-optimize). lld matters to us
 //     because Bun's cross-language ThinLTO link runs LLVM's backend inside lld.
+//   - only the pieces Bun uses are built and installed (LLVM_DISTRIBUTION_COMPONENTS).
 //
 // Upstream recipe, at src/llvm-project's pinned commit:
 //   clang/cmake/caches/Release.cmake
 //   clang/utils/perf-training/          (profile collection, BOLT post-link step)
 //   .github/workflows/release-binaries.yml (how it is invoked)
 
-import { chmodSync, copyFileSync, readdirSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { isDone, markDone, mkdir, remove } from "./fs.ts";
+import { isDone, markDone, mkdir, remove, write } from "./fs.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
+
+/**
+ * Install components of the final stage that make up the LLVM half of the toolchain
+ * (each is an LLVM install component: a tool, `clang-resource-headers`, or the
+ * compiler-rt `builtins`/`runtimes`). clang and lld's symlinks (clang++, clang-cl,
+ * ld.lld, ld64.lld, lld-link, wasm-ld) install with them.
+ */
+export const DISTRIBUTION_COMPONENTS = [
+  "clang", "clang-resource-headers", "lld", "builtins", "runtimes",
+  "llvm-ar", "llvm-ranlib", "llvm-lib", "llvm-nm", "llvm-objcopy", "llvm-objdump", "llvm-strip",
+  "llvm-symbolizer", "llvm-addr2line", "llvm-profdata", "llvm-cov", "llvm-rc", "llvm-mt", "llvm-readobj", "llvm-readelf",
+  "llvm-size", "llvm-dwarfdump", "llvm-cxxfilt", "llvm-config", "dsymutil",
+];
 
 /**
  * -D settings passed ahead of `-C Release.cmake`. The LLVM_RELEASE_* ones are the
@@ -36,11 +50,14 @@ export function releaseOverrides(o: Options): Record<string, string> {
   return {
     // Release.cmake inputs. Upstream: clang;lld;lldb;clang-tools-extra;polly;mlir;flang;bolt and
     // compiler-rt;libcxx;openmp;libcxxabi;libunwind;flang-rt.
-    LLVM_RELEASE_ENABLE_PROJECTS: "clang;lld;bolt",
+    LLVM_RELEASE_ENABLE_PROJECTS: "clang;lld",
     LLVM_RELEASE_ENABLE_RUNTIMES: "compiler-rt",
-    // Upstream: clang;package;check-all;check-llvm;check-clang. We install instead of
-    // packaging and leave the test suites to upstream.
-    LLVM_RELEASE_FINAL_STAGE_TARGETS: "clang;lld;runtimes;install",
+    // Upstream: clang;package;check-all;check-llvm;check-clang (what `ninja stage2-<x>` can
+    // reach in the final stage). We install a distribution instead of packaging, and leave
+    // the test suites to upstream.
+    LLVM_RELEASE_FINAL_STAGE_TARGETS: "install-distribution",
+    // What that distribution is: the files of the LLVM install a Bun build uses.
+    BOOTSTRAP_BOOTSTRAP_LLVM_DISTRIBUTION_COMPONENTS: DISTRIBUTION_COMPONENTS.join(";"),
 
     CMAKE_INSTALL_PREFIX: p.llvmInstall, // the bootstrap forwards this one itself
     // Upstream builds every backend; Bun targets x86_64 and aarch64.
@@ -80,8 +97,11 @@ export function releaseOverrides(o: Options): Record<string, string> {
 
     // The training workload, for the instrumented stage (BOOTSTRAP_ = second stage).
     BOOTSTRAP_CLANG_PGO_TRAINING_DATA_SOURCE_DIR: join(o.checkout, "bun", "train-clang"),
-    // Bun's build needs these next to the instrumented clang it is pointed at.
-    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "lld;llvm-ar;llvm-ranlib;llvm-nm;llvm-objcopy;llvm-strip;llvm-symbolizer;llvm-profdata;llvm-rc;llvm-mt;dsymutil",
+    // Bun's build needs these next to the instrumented clang it is pointed at, on top of
+    // what perf-training builds for an external project anyway (clang, lld, llvm-ar/ranlib/
+    // nm/objcopy/objdump/strip/readelf): llvm-lib and llvm-rc/llvm-mt for the Windows
+    // target, dsymutil for macOS.
+    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "llvm-lib;llvm-rc;llvm-mt;dsymutil",
   };
 }
 
@@ -113,14 +133,25 @@ export function buildLlvm(o: Options): void {
   ]);
 
   // One target drives all three stages: stage1 → stage2-instrumented (+ generate-profdata,
-  // which builds bun/train-clang with the instrumented clang) → stage2 → install.
-  run(["ninja", "-C", p.llvmBuild, `-j${o.jobs}`, "stage2-install"], {
+  // which builds bun/train-clang with the instrumented clang) → stage2 → install-distribution.
+  remove(p.llvmInstall);
+  run(["ninja", "-C", p.llvmBuild, `-j${o.jobs}`, "stage2-install-distribution"], {
     env: { ...trainingEnv(o), NINJA_STATUS: "[%f/%t %es] " },
   });
 
   if (o.bolt) boltWithBun(o);
+  // For package.ts, so that job needs no llvm-project checkout.
+  for (const [name, src] of Object.entries(LLVM_LICENSES)) cpSync(join(o.llvmProject, src), join(p.llvmInstall, "licenses", name));
+  write(join(p.llvmInstall, "llvm-project.rev"), llvmRev + "\n");
   markDone(p.llvmInstall, key);
 }
+
+const LLVM_LICENSES: Record<string, string> = {
+  "LLVM-LICENSE.TXT": "llvm/LICENSE.TXT",
+  "clang-LICENSE.TXT": "clang/LICENSE.TXT",
+  "lld-LICENSE.TXT": "lld/LICENSE.TXT",
+  "compiler-rt-LICENSE.TXT": "compiler-rt/LICENSE.TXT",
+};
 
 /** Binaries in the install's bin/ that get BOLTed: the clang driver binary and lld. */
 function boltTargets(installBin: string): string[] {
@@ -132,14 +163,13 @@ function boltTargets(installBin: string): string[] {
 /**
  * BOLT clang and lld in the install tree: instrument both in place, build Bun with
  * them (bun/train.ts clang-bolt), then optimize the originals with the collected
- * profile. llvm-bolt / merge-fdata are the ones just built and installed alongside
- * (the `bolt` project; package.ts leaves them out of the tarball).
+ * profile. llvm-bolt / merge-fdata are the host LLVM's, as on the rust side.
  */
 function boltWithBun(o: Options): void {
   const p = paths(o);
   const bin = join(p.llvmInstall, "bin");
-  const llvmBolt = join(bin, "llvm-bolt");
-  const mergeFdata = join(bin, "merge-fdata");
+  const llvmBolt = join(o.hostLlvm, "bin", "llvm-bolt");
+  const mergeFdata = join(o.hostLlvm, "bin", "merge-fdata");
   const work = join(p.llvmBuild, "bun-bolt");
   remove(work);
   mkdir(work);
