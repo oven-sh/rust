@@ -17,6 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential make nasm libtool ruby perl golang-go \
       libgmp-dev libmpfr-dev libmpc-dev flex \
     && rm -rf /var/lib/apt/lists/*
+# Cross gcc + glibc for the other Linux architecture, so the LLVM build can produce
+# compiler-rt (ASAN etc.) for it: Bun's CI builds x64 and arm64 Linux from one host.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      $([ "$(dpkg --print-architecture)" = amd64 ] && echo g++-aarch64-linux-gnu || echo g++-x86-64-linux-gnu) \
+    && rm -rf /var/lib/apt/lists/*
 # CMake: LLVM wants >= 3.20, Bun's build >= 3.24; jammy has 3.22. Same source as Bun's bootstrap.sh.
 RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
       https://github.com/Kitware/CMake/releases/download/v${CMAKE}/cmake-${CMAKE}-linux-$(uname -m).tar.gz \

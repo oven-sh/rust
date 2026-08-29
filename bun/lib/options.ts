@@ -26,6 +26,8 @@ export interface Options {
   buildDir: string;
   host: Host;
   triple: string;
+  /** The other Linux architecture Bun's CI targets from this host (compiler-rt is built for it too). */
+  crossTriple: string;
   /** An existing LLVM install (clang, lld, llvm-profdata, llvm-bolt) used to build everything. */
   hostLlvm: string;
   /** oven-sh/bun ref to train on, or an existing checkout to use as-is. */
@@ -61,6 +63,7 @@ export function parseOptions(argv: string[]): Options {
   }
   const host: Host = `linux-${arch}`;
   const triple = arch === "x64" ? "x86_64-unknown-linux-gnu" : "aarch64-unknown-linux-gnu";
+  const crossTriple = arch === "x64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu";
 
   const options: Options = {
     command,
@@ -69,6 +72,7 @@ export function parseOptions(argv: string[]): Options {
     buildDir: resolve(take("build-dir") ?? join(checkout, "obj", "bun-toolchain")),
     host,
     triple,
+    crossTriple,
     hostLlvm: resolve(take("host-llvm") ?? "/opt/llvm"),
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),

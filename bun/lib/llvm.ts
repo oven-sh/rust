@@ -38,6 +38,15 @@ function releaseOverrides(o: Options): Record<string, string> {
     LLVM_TARGETS_TO_BUILD: "X86;AArch64",
     LLVM_PARALLEL_LINK_JOBS: String(Math.max(1, Math.floor(o.jobs / 8))),
 
+    // compiler-rt (builtins, sanitizers, profile) for both Linux architectures Bun's CI
+    // builds from one host, not just the native one. Upstream: native only. The cross
+    // one compiles against the image's <triple> cross gcc/libc (bun/Dockerfile).
+    BOOTSTRAP_BOOTSTRAP_LLVM_BUILTIN_TARGETS: `default;${o.crossTriple}`,
+    BOOTSTRAP_BOOTSTRAP_LLVM_RUNTIME_TARGETS: `default;${o.crossTriple}`,
+    [`BOOTSTRAP_BOOTSTRAP_BUILTINS_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
+    [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
+    [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`]: "compiler-rt",
+
     // Stage 1 is built with the host LLVM.
     CMAKE_C_COMPILER: join(o.hostLlvm, "bin", "clang"),
     CMAKE_CXX_COMPILER: join(o.hostLlvm, "bin", "clang++"),

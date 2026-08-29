@@ -62,8 +62,12 @@ const runShConfigureArgs = [
   "--set rust.codegen-backends=llvm,cranelift",
 ];
 
-/** BOLT: upstream applies it on x86_64 only ("broken as of December 2024" on aarch64, opt-dist main.rs). */
-const rustBolt = (o: Options): boolean => o.bolt && o.host === "linux-x64";
+/**
+ * BOLT libLLVM.so + librustc_driver.so. Upstream: x86_64 only, with a FIXME to enable
+ * aarch64 "once it's fixed upstream. Broken as of December 2024" (opt-dist main.rs).
+ * We run it on both with the newer host llvm-bolt; --skip-bolt turns it off.
+ */
+const rustBolt = (o: Options): boolean => o.bolt;
 
 /**
  * Where this build deliberately differs from upstream. Each entry replaces or

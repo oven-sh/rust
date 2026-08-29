@@ -11,8 +11,8 @@ built against — and both are built with their upstream release recipes:
 
 | | upstream recipe | what we change |
 |---|---|---|
-| rustc, cargo | `src/ci/docker/host-*/dist-*-linux` + `src/tools/opt-dist` (how rustup's binaries are made: PGO'd LLVM, PGO'd rustc, BOLT on x86_64) | profiles are gathered by compiling Bun instead of rustc-perf (`opt-dist --training-command`); docs are not built |
-| clang, lld | `clang/cmake/caches/Release.cmake` (how LLVM's release tarballs are made: 3-stage PGO + ThinLTO, clang BOLTed on Linux) | the PGO training project is a Bun build; only the `clang`, `lld`, `bolt` projects and the `compiler-rt` runtime; only the X86 and AArch64 backends |
+| rustc, cargo | `src/ci/docker/host-*/dist-*-linux` + `src/tools/opt-dist` (how rustup's binaries are made: PGO'd LLVM, PGO'd rustc, BOLT on x86_64) | profiles are gathered by compiling Bun instead of rustc-perf (`opt-dist --training-command`); BOLT on aarch64 too; docs are not built |
+| clang, lld | `clang/cmake/caches/Release.cmake` (how LLVM's release tarballs are made: 3-stage PGO + ThinLTO, clang BOLTed on Linux) | the PGO training project is a Bun build; only the `clang`, `lld`, `bolt` projects and the `compiler-rt` runtime; only the X86 and AArch64 backends; compiler-rt additionally built for the other Linux architecture |
 
 The exact upstream arguments and each deviation are spelled out in
 [`lib/rust.ts`](lib/rust.ts) and [`lib/llvm.ts`](lib/llvm.ts). The commits on
