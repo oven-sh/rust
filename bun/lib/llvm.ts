@@ -63,6 +63,12 @@ export function releaseOverrides(o: Options): Record<string, string> {
     [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
     [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`]: "compiler-rt",
 
+    // deviation: no dlopen'd plugin support in clang / LLVM passes. Nothing then has to stay
+    // exported from the executables, so ThinLTO can internalize and inline across far more
+    // of clang and lld. Bun's build loads no compiler plugins. Upstream: ON (general-purpose).
+    BOOTSTRAP_BOOTSTRAP_CLANG_PLUGIN_SUPPORT: "OFF",
+    BOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_PLUGINS: "OFF",
+
     // BOLT is applied by boltWithBun() below instead (deviation: workload, and lld too).
     // Release.cmake still links with --emit-relocs,-znow on Linux, which BOLT needs.
     BOOTSTRAP_BOOTSTRAP_CLANG_BOLT: "OFF",

@@ -12,7 +12,7 @@ built against — and both are built with their upstream release recipes:
 | | upstream recipe | what we change |
 |---|---|---|
 | rustc, cargo | `src/ci/docker/host-*/dist-*-linux` + `src/tools/opt-dist` (how rustup's binaries are made: PGO'd LLVM, PGO'd rustc, BOLT on x86_64) | profiles gathered by compiling Bun instead of rustc-perf (`opt-dist --training-command`); LLVM linked into `librustc_driver` statically; BOLT on aarch64 too; x64 built for x86-64-v3; only the components Bun uses are dist'ed; docs are not built |
-| clang, lld | `clang/cmake/caches/Release.cmake` (how LLVM's release tarballs are made: 3-stage PGO + ThinLTO, clang BOLTed on Linux) | the PGO training project is a Bun build (host + the cross targets Bun's CI builds); clang **and lld** BOLTed with a Bun build instead of the built-in perf-training suite; x64 built for x86-64-v3; only the `clang`, `lld`, `bolt` projects and the `compiler-rt` runtime; only the X86 and AArch64 backends; compiler-rt additionally built for the other Linux architecture |
+| clang, lld | `clang/cmake/caches/Release.cmake` (how LLVM's release tarballs are made: 3-stage PGO + ThinLTO, clang BOLTed on Linux) | the PGO training project is a Bun build (host + the cross targets Bun's CI builds); clang **and lld** BOLTed with a Bun build instead of the built-in perf-training suite; no compiler-plugin support (lets LTO internalize more); x64 built for x86-64-v3; only the `clang`, `lld`, `bolt` projects and the `compiler-rt` runtime; only the X86 and AArch64 backends; compiler-rt additionally built for the other Linux architecture |
 
 The exact upstream arguments and each deviation are spelled out in
 [`lib/rust.ts`](lib/rust.ts) and [`lib/llvm.ts`](lib/llvm.ts). The commits on

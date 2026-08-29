@@ -4,6 +4,7 @@
 FROM ubuntu:22.04
 ARG LLVM=21.1.8
 ARG NODE=26.8.1
+ARG BUN=1.4.0
 ENV DEBIAN_FRONTEND=noninteractive
 # archive.ubuntu.com drops connections now and then.
 RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries
@@ -94,7 +95,7 @@ RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://github.com/f
 # node runs bun/*.ts; bun is what Bun's own build uses for its codegen steps.
 RUN arch=$(dpkg --print-architecture | sed 's/amd64/x64/') \
     && curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-${arch}.tar.xz | tar -xJ -C /usr/local --strip-components=1 \
-    && npm install -g bun \
+    && npm install -g bun@${BUN} \
     && node --version && bun --version
 
 WORKDIR /checkout
