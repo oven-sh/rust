@@ -54,6 +54,7 @@ export function packageToolchain(o: Options): string {
         llvm: { commit: read(join(p.llvmInstall, "llvm-project.rev")).trim(), cmake: releaseOverrides(o) },
         trainedOn: { bun: o.bunDir === undefined ? o.bunRef : rev(p.bun) },
         bolt: o.bolt,
+        mimalloc: o.mimalloc !== undefined,
         clang: firstLine(run([join(root, "bin", "clang"), "--version"], { capture: true })),
         rustc: firstLine(run([join(root, "bin", "rustc"), "-vV"], { capture: true })),
       },

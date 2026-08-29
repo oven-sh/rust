@@ -1,5 +1,6 @@
 // Command line and fixed inputs of the toolchain build.
 
+import { existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -30,6 +31,8 @@ export interface Options {
   crossTriple: string;
   /** An existing LLVM install (clang, lld, llvm-profdata, llvm-bolt) used to build everything. */
   hostLlvm: string;
+  /** mimalloc override object linked into clang and lld; undefined = keep the libc allocator. */
+  mimalloc: string | undefined;
   /** oven-sh/bun ref to train on, or an existing checkout to use as-is. */
   bunRef: string;
   bunDir: string | undefined;
@@ -74,6 +77,7 @@ export function parseOptions(argv: string[]): Options {
     triple,
     crossTriple,
     hostLlvm: resolve(take("host-llvm") ?? "/opt/llvm"),
+    mimalloc: (v => (v === "none" ? undefined : resolve(v)))(take("mimalloc") ?? "/opt/mimalloc/mimalloc.o"),
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),
     jobs: Number(take("jobs") ?? availableParallelism()),
@@ -82,6 +86,9 @@ export function parseOptions(argv: string[]): Options {
   if (args.size > 0) {
     console.error(`unknown option(s): ${[...args.keys()].map(k => `--${k}`).join(", ")}`);
     usage();
+  }
+  if (options.mimalloc !== undefined && !existsSync(options.mimalloc)) {
+    throw new Error(`--mimalloc: ${options.mimalloc} does not exist (bun/Dockerfile builds it; pass --mimalloc=none to use the libc allocator)`);
   }
   if (options.bunDir === undefined && !/^[0-9a-f]{40}$/.test(options.bunRef)) {
     throw new Error(`--bun-ref must be a full 40-character commit sha (it is fetched shallowly by sha), got ${options.bunRef}`);
@@ -101,6 +108,7 @@ function usage(): never {
 options:
   --build-dir=DIR      output root (default: obj/bun-toolchain)
   --host-llvm=DIR      existing LLVM used to compile everything (default: /opt/llvm)
+  --mimalloc=FILE|none mimalloc.o to link into clang/lld (default: /opt/mimalloc/mimalloc.o)
   --llvm-project=DIR   llvm sources (default: src/llvm-project)
   --bun-ref=SHA        oven-sh/bun commit to train on (default: pinned)
   --bun-dir=DIR        use this Bun checkout instead of cloning --bun-ref

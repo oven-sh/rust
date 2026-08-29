@@ -93,6 +93,19 @@ RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://github.com/f
     && CFLAGS=-fPIC make -C /tmp/zstd-${ZSTD} -j"$(nproc)" >/dev/null && make -C /tmp/zstd-${ZSTD} install >/dev/null \
     && rm -rf /tmp/zstd-${ZSTD} && ldconfig
 
+# mimalloc, linked statically into the clang and lld we ship (bun/lib/llvm.ts) in place of
+# glibc malloc. Built as the single override object so that putting it on the link line
+# is all it takes.
+ARG MIMALLOC=3.4.5
+RUN curl -fsSL --retry 8 --retry-all-errors https://github.com/microsoft/mimalloc/archive/refs/tags/v${MIMALLOC}.tar.gz | tar -xz -C /tmp \
+    && cmake -G Ninja -S /tmp/mimalloc-${MIMALLOC} -B /tmp/mimalloc-build -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+         -DMI_OVERRIDE=ON -DMI_BUILD_OBJECT=ON -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=OFF -DMI_BUILD_TESTS=OFF >/dev/null \
+    && ninja -C /tmp/mimalloc-build >/dev/null \
+    && install -Dm644 /tmp/mimalloc-build/mimalloc.o /opt/mimalloc/mimalloc.o \
+    && install -Dm644 /tmp/mimalloc-${MIMALLOC}/LICENSE /opt/mimalloc/LICENSE \
+    && rm -rf /tmp/mimalloc-${MIMALLOC} /tmp/mimalloc-build
+
 # rustup, no toolchain: the clang/lld training builds Bun before our rustc exists (the two
 # halves build in parallel), so Bun's build installs its pinned nightly through this, as it
 # does on a CI machine. RUSTUP_HOME/CARGO_HOME are left to default to $HOME at run time.

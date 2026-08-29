@@ -73,6 +73,12 @@ export function releaseOverrides(o: Options): Record<string, string> {
     [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
     [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`]: "compiler-rt",
 
+    // deviation: clang, lld (every final-stage executable) allocate with mimalloc instead
+    // of glibc malloc — the ThinLTO link runs LLVM's optimizer on every core at once.
+    // Release.cmake's own final-stage linker flags (--emit-relocs for BOLT, -znow) are
+    // repeated here because setting the variable pre-empts its set().
+    ...(o.mimalloc ? { BOOTSTRAP_BOOTSTRAP_CMAKE_EXE_LINKER_FLAGS: `-Wl,--emit-relocs,-znow ${o.mimalloc}` } : {}),
+
     // deviation: no dlopen'd plugin support in clang / LLVM passes. Nothing then has to stay
     // exported from the executables, so ThinLTO can internalize and inline across far more
     // of clang and lld. Bun's build loads no compiler plugins. Upstream: ON (general-purpose).
@@ -101,7 +107,7 @@ export function releaseOverrides(o: Options): Record<string, string> {
 export function buildLlvm(o: Options): void {
   const p = paths(o);
   const llvmRev = run(["git", "rev-parse", "HEAD"], { cwd: o.llvmProject, capture: true }).trim();
-  const key = `llvm-${RECIPE_VERSION}-${llvmRev}-bolt=${o.bolt}`;
+  const key = `llvm-${RECIPE_VERSION}-${llvmRev}-bolt=${o.bolt}-mimalloc=${o.mimalloc !== undefined}`;
   if (isDone(p.llvmInstall, key)) {
     console.log(`llvm: up to date (${key})`);
     return;
@@ -135,6 +141,7 @@ export function buildLlvm(o: Options): void {
   if (o.bolt) boltWithBun(o);
   // For package.ts, so that job needs no llvm-project checkout.
   for (const [name, src] of Object.entries(LLVM_LICENSES)) cpSync(join(o.llvmProject, src), join(p.llvmInstall, "licenses", name));
+  if (o.mimalloc) cpSync(join(o.mimalloc, "..", "LICENSE"), join(p.llvmInstall, "licenses", "mimalloc-LICENSE"));
   write(join(p.llvmInstall, "llvm-project.rev"), llvmRev + "\n");
   markDone(p.llvmInstall, key);
 }
