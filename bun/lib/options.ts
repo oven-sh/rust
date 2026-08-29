@@ -12,7 +12,7 @@ export const RECIPE_VERSION = 1;
  * (scripts/build/tools.ts). Bumped deliberately; a stale ref only makes the
  * profile slightly less representative.
  */
-export const DEFAULT_BUN_REF = "7ad2d6e9ff006420ce86aa735d5f8ad975c8bbd2";
+export const DEFAULT_BUN_REF = "ed950b88ab2ec6b58bccdfe7d310731b8ca13c4d";
 
 export type Host = "linux-x64" | "linux-aarch64";
 
