@@ -23,6 +23,10 @@ pub struct Environment {
     /// Directory containing a pre-built rustc-perf checkout.
     #[builder(default)]
     prebuilt_rustc_perf: Option<Utf8PathBuf>,
+    /// A program to run instead of the rustc-perf benchmark set when gathering PGO/BOLT
+    /// profiles. See `training::custom_training_command`.
+    #[builder(default)]
+    training_command: Option<Utf8PathBuf>,
     use_bolt: bool,
     shared_llvm: bool,
     run_tests: bool,
@@ -99,6 +103,10 @@ impl Environment {
 
     pub fn benchmark_cargo_config(&self) -> &[String] {
         &self.benchmark_cargo_config
+    }
+
+    pub fn training_command(&self) -> Option<&Utf8PathBuf> {
+        self.training_command.as_ref()
     }
 
     pub fn run_tests(&self) -> bool {

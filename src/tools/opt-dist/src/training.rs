@@ -14,6 +14,9 @@ fn init_compiler_benchmarks(
     scenarios: &[&str],
     crates: &[&str],
 ) -> CmdBuilder {
+    if let Some(program) = env.training_command() {
+        return custom_training_command(env, program, profiles, scenarios);
+    }
     // Run rustc-perf benchmarks
     // Benchmark using profile_local with eprintln, which essentially just means
     // don't actually benchmark -- just make sure we run rustc a bunch of times.
@@ -54,6 +57,28 @@ fn init_compiler_benchmarks(
     }
 
     cmd
+}
+
+/// `--training-command <program>`: exercise the stage2 compiler with a caller-supplied
+/// workload instead of rustc-perf. The program receives the same information the collector
+/// would: which compiler and cargo to drive and which rustc-perf profiles (`Check`, `Debug`,
+/// `Opt`, `Doc`) and scenarios the phase wants covered. Whatever it compiles must go through
+/// `OPT_DIST_RUSTC` (or `OPT_DIST_RUSTDOC` for `Doc`) for profiles to be recorded.
+fn custom_training_command(
+    env: &Environment,
+    program: &Utf8Path,
+    profiles: &[&str],
+    scenarios: &[&str],
+) -> CmdBuilder {
+    let rustc = env.rustc_stage_2();
+    let rustdoc = rustc.with_file_name(format!("rustdoc{}", executable_extension()));
+    cmd(&[program.as_str()])
+        .env("OPT_DIST_RUSTC", rustc.as_str())
+        .env("OPT_DIST_RUSTDOC", rustdoc.as_str())
+        .env("OPT_DIST_CARGO", env.cargo_stage_0().as_str())
+        .env("OPT_DIST_PROFILES", &profiles.join(","))
+        .env("OPT_DIST_SCENARIOS", &scenarios.join(","))
+        .env("RUSTC_BOOTSTRAP", "1")
 }
 
 /// Describes which `llvm-profdata` binary should be used for merging PGO profiles.
