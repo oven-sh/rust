@@ -147,17 +147,13 @@ jobs:
         with:
           path: artifacts
       # artifacts/bun-toolchain-<host>/{bun-toolchain-<host>.tar.zst, bun-toolchain-<host>/toolchain.json}
-      # artifacts/rust-sysroot-<host>/{rust-sysroot-<host>.tar.zst, obj/bun-toolchain/rust/opt-artifacts/*.profdata}
       - name: Collect assets
         run: |
           mkdir assets
           for dir in artifacts/bun-toolchain-*/; do
-            host=$(basename "$dir"); host=${host#bun-toolchain-}
-            cp "$dir"/*.tar.zst assets/
-            cp "$dir"/*/toolchain.json "assets/toolchain-$host.json"
-            for f in artifacts/rust-sysroot-$host/obj/bun-toolchain/rust/opt-artifacts/*.profdata; do
-              cp "$f" "assets/$(basename "${f%.profdata}")-$host.profdata"
-            done
+            name=$(basename "$dir")
+            cp "$dir/$name.tar.zst" assets/
+            cp "$dir/$name/toolchain.json" "assets/$name.json"
           done
           ls -l assets
       - name: Create release
@@ -167,5 +163,5 @@ jobs:
           tag="bun-toolchain-${GITHUB_REF_NAME}-${GITHUB_SHA::8}"
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$tag" \
-              --notes "rustc/cargo + clang/lld for building Bun, built from ${GITHUB_SHA} by bun/toolchain.ts. toolchain-<host>.json says what each tarball was built and trained from."
+              --notes "rustc/cargo + clang/lld for building Bun, built from ${GITHUB_SHA} by bun/toolchain.ts. bun-toolchain-<host>.json says what each tarball was built and trained from."
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber assets/*
