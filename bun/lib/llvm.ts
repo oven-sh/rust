@@ -29,7 +29,7 @@ import { trainingEnv } from "./train-config.ts";
  * ld.lld, ld64.lld, lld-link, wasm-ld) install with them.
  */
 export const DISTRIBUTION_COMPONENTS = [
-  "clang", "clang-resource-headers", "lld", "builtins", "runtimes",
+  "clang", "clang-format", "clang-resource-headers", "lld", "builtins", "runtimes",
   "llvm-ar", "llvm-ranlib", "llvm-lib", "llvm-nm", "llvm-objcopy", "llvm-objdump", "llvm-strip",
   "llvm-symbolizer", "llvm-addr2line", "llvm-profdata", "llvm-cov", "llvm-rc", "llvm-mt", "llvm-readobj", "llvm-readelf",
   "llvm-size", "llvm-dwarfdump", "llvm-cxxfilt", "llvm-config", "dsymutil",
