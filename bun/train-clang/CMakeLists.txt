@@ -1,0 +1,14 @@
+# Handed to LLVM's PGO machinery as CLANG_PGO_TRAINING_DATA_SOURCE_DIR (see
+# bun/lib/llvm.ts). clang/utils/perf-training configures this project with the
+# instrumented clang as the C/C++ compiler and builds it; every compile and link
+# it performs is recorded into the profile. The "project" is a Bun release build.
+cmake_minimum_required(VERSION 3.20)
+project(bun-toolchain-training LANGUAGES NONE)
+
+find_program(NODE node REQUIRED)
+
+add_custom_target(train-on-bun ALL
+  COMMAND ${CMAKE_COMMAND} -E env CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER}
+          ${NODE} ${CMAKE_CURRENT_SOURCE_DIR}/../train.ts clang
+  USES_TERMINAL
+  COMMENT "Building Bun with the instrumented clang")
