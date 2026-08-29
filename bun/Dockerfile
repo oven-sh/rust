@@ -15,6 +15,7 @@ ARG CMAKE=3.30.5
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev libstdc++-12-dev libxml2 libedit2 libncurses6 \
       build-essential make nasm libtool ruby perl golang-go \
+      libgmp-dev libmpfr-dev libmpc-dev flex \
     && rm -rf /var/lib/apt/lists/*
 # CMake: LLVM wants >= 3.20, Bun's build >= 3.24; jammy has 3.22. Same source as Bun's bootstrap.sh.
 RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
@@ -31,6 +32,25 @@ RUN arch=$(dpkg --print-architecture | sed 's/amd64/X64/; s/arm64/ARM64/') \
     && /opt/llvm/bin/clang --version
 # Unversioned clang/clang++/ld.lld/llvm-* on PATH, as rust's `target.*.linker=clang` expects.
 ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
+
+# GCC, for the libstdc++.a / libgcc that get statically linked into rustc's
+# libLLVM.so and librustc_driver.so (--enable-llvm-static-stdcpp). As upstream's
+# src/ci/docker/scripts/build-gcc.sh says: "-fno-reorder-blocks-and-partition is
+# required to enable BOLT optimization of the C++ standard library"; distro
+# archives are built with it on and stripped of the FILE symbols llvm-bolt would
+# need to cope. Only the host clang uses this GCC (via the .cfg files below); the
+# clang we ship picks up the system libstdc++ like any other clang.
+# Not shipped, so unlike upstream: a current GCC, --disable-bootstrap, apt's gmp/mpfr/mpc.
+ARG GCC=13.3.0
+RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://ftp.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GCC}.tar.xz | tar -xJ -C /tmp \
+    && mkdir /tmp/gcc-build && cd /tmp/gcc-build \
+    && /tmp/gcc-${GCC}/configure --prefix=/opt/gcc --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
+         --disable-gnu-unique-object --enable-cxx-flags=-fno-reorder-blocks-and-partition >/dev/null \
+    && make -j"$(nproc)" >/tmp/gcc-build.log 2>&1 || { tail -100 /tmp/gcc-build.log; exit 1; } \
+    && make install >/dev/null && cd / && rm -rf /tmp/gcc-${GCC} /tmp/gcc-build /tmp/gcc-build.log \
+    && echo /opt/gcc/lib64 > /etc/ld.so.conf.d/opt-gcc.conf && ldconfig \
+    && printf -- '--gcc-install-dir=%s\n' "$(dirname "$(/opt/gcc/bin/gcc -print-libgcc-file-name)")" | tee /opt/llvm/bin/clang.cfg > /opt/llvm/bin/clang++.cfg \
+    && /opt/llvm/bin/clang++ -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC installation: /opt/gcc"
 
 # zstd for `llvm.libzstd=true`, built as upstream's src/ci/docker/scripts/build-zstd.sh
 # does. (Ubuntu's libzstd.a is GCC-built with hot/cold-split functions and no FILE

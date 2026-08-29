@@ -62,15 +62,8 @@ const runShConfigureArgs = [
   "--set rust.codegen-backends=llvm,cranelift",
 ];
 
-/**
- * BOLT (x86_64 upstream; off on aarch64 upstream): currently OFF here on both.
- * llvm-bolt refuses libLLVM.so because the libstdc++.a/libgcc_eh.a it statically
- * links from the Ubuntu image contain GCC hot/cold-split `.cold` fragments with no
- * STT_FILE symbols to pair them by; upstream's image builds its own GCC, whose
- * archives keep them. To turn it back on: build GCC in bun/Dockerfile the way
- * src/ci/docker/scripts/build-gcc.sh does, then pass `--use-bolt` below.
- */
-const RUST_BOLT = false;
+/** BOLT: upstream applies it on x86_64 only ("broken as of December 2024" on aarch64, opt-dist main.rs). */
+const rustBolt = (o: Options): boolean => o.bolt && o.host === "linux-x64";
 
 /**
  * Where this build deliberately differs from upstream. Each entry replaces or
@@ -149,7 +142,7 @@ export function buildRust(o: Options): void {
       `--build-dir=${join(p.rustBuild, "build")}`,
       `--artifact-dir=${p.rustArtifacts}`,
       `--training-command=${join(o.checkout, "bun", "train.ts")}`,
-      ...(o.bolt && RUST_BOLT ? ["--use-bolt"] : []),
+      ...(rustBolt(o) ? ["--use-bolt"] : []),
       "--",
       "python3",
       join(o.checkout, "x.py"),
