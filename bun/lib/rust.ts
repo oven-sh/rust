@@ -71,7 +71,6 @@ function bunDeltas(o: Options): { drop: string[]; add: string[] } {
     drop: [
       "--enable-sccache", // upstream's S3-backed compiler cache; not available here
       "--enable-compiler-docs", // rustc API docs: build time only, not shipped by us
-      "--set build.metrics",
       "--disable-manage-submodules", // upstream CI pre-clones every submodule; let bootstrap fetch the ones it needs
     ],
     add: [
