@@ -34,8 +34,13 @@ bun-toolchain-linux-x64/
 ```
 
 The `llvm + package` job ends by building Bun with the packaged toolchain and
-running `bun --version`; nothing is uploaded if that fails. The linux-x64
-toolchain requires an x86-64-v3 CPU (Haswell / Excavator or newer).
+running `bun --version`; nothing is uploaded if that fails.
+
+To run it a host needs glibc ≥ 2.35 and libstdc++ ≥ 12 (Ubuntu 22.04 / Debian 12
+or newer), zlib and libxml2; the linux-x64 one also an x86-64-v3 CPU (Haswell /
+Excavator or newer). rustc, cargo and the rustlib tools link LLVM, libstdc++ and
+zstd statically; clang and lld link libstdc++, zlib and libxml2 dynamically, as
+LLVM's own release binaries do.
 
 Bun's build uses it via `BUN_TOOLCHAIN_LLVM` / `BUN_TOOLCHAIN_RUST`
 (`scripts/build/tools.ts` in oven-sh/bun).

@@ -30,6 +30,9 @@ export function releaseOverrides(o: Options): Record<string, string> {
   const p = paths(o);
   // deviation (x64): upstream targets baseline x86-64; ours needs x86-64-v3 (Haswell, 2013+).
   const march = o.host === "linux-x64" ? "-march=x86-64-v3" : "";
+  // clang's bootstrap hands `BOOTSTRAP_<X>` to the next stage as `<X>`, so a setting for
+  // all three stages is spelled three times.
+  const everyStage = (name: string, value: string) => ({ [name]: value, [`BOOTSTRAP_${name}`]: value, [`BOOTSTRAP_BOOTSTRAP_${name}`]: value });
   return {
     // Release.cmake inputs. Upstream: clang;lld;lldb;clang-tools-extra;polly;mlir;flang;bolt and
     // compiler-rt;libcxx;openmp;libcxxabi;libunwind;flang-rt.
@@ -39,11 +42,10 @@ export function releaseOverrides(o: Options): Record<string, string> {
     // packaging and leave the test suites to upstream.
     LLVM_RELEASE_FINAL_STAGE_TARGETS: "clang;lld;runtimes;install",
 
-    // Passed through to every stage (see CLANG_BOOTSTRAP_PASSTHROUGH below).
-    CMAKE_INSTALL_PREFIX: p.llvmInstall,
+    CMAKE_INSTALL_PREFIX: p.llvmInstall, // the bootstrap forwards this one itself
     // Upstream builds every backend; Bun targets x86_64 and aarch64.
-    LLVM_TARGETS_TO_BUILD: "X86;AArch64",
-    LLVM_PARALLEL_LINK_JOBS: String(Math.max(1, Math.floor(o.jobs / 8))),
+    ...everyStage("LLVM_TARGETS_TO_BUILD", "X86;AArch64"),
+    ...everyStage("LLVM_PARALLEL_LINK_JOBS", String(Math.max(1, Math.floor(o.jobs / 8)))),
 
     // The instrumented and the final stage are compiled for the same -march so the
     // profile's inlining decisions line up.
@@ -74,8 +76,6 @@ export function releaseOverrides(o: Options): Record<string, string> {
     BOOTSTRAP_CLANG_PGO_TRAINING_DATA_SOURCE_DIR: join(o.checkout, "bun", "train-clang"),
     // Bun's build needs these next to the instrumented clang it is pointed at.
     BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "lld;llvm-ar;llvm-ranlib;llvm-nm;llvm-objcopy;llvm-strip;llvm-symbolizer;llvm-profdata;llvm-rc;llvm-mt;dsymutil",
-
-    CLANG_BOOTSTRAP_PASSTHROUGH: "CMAKE_INSTALL_PREFIX;LLVM_TARGETS_TO_BUILD;LLVM_PARALLEL_LINK_JOBS",
   };
 }
 
