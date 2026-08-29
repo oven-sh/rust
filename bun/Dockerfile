@@ -13,7 +13,7 @@ ARG CMAKE=3.30.5
 # (the training workload) additionally needs — the list scripts/bootstrap.sh in
 # oven-sh/bun installs on its CI image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev libzstd-dev file binutils libc6-dev libstdc++-12-dev libxml2 libedit2 libncurses6 \
+      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev libstdc++-12-dev libxml2 libedit2 libncurses6 \
       build-essential make nasm libtool ruby perl golang-go \
     && rm -rf /var/lib/apt/lists/*
 # CMake: LLVM wants >= 3.20, Bun's build >= 3.24; jammy has 3.22. Same source as Bun's bootstrap.sh.
@@ -31,6 +31,14 @@ RUN arch=$(dpkg --print-architecture | sed 's/amd64/X64/; s/arm64/ARM64/') \
     && /opt/llvm/bin/clang --version
 # Unversioned clang/clang++/ld.lld/llvm-* on PATH, as rust's `target.*.linker=clang` expects.
 ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
+
+# zstd for `llvm.libzstd=true`, built as upstream's src/ci/docker/scripts/build-zstd.sh
+# does. (Ubuntu's libzstd.a is GCC-built with hot/cold-split functions and no FILE
+# symbols; once linked into libLLVM.so, llvm-bolt refuses to instrument it.)
+ARG ZSTD=1.5.6
+RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://github.com/facebook/zstd/releases/download/v${ZSTD}/zstd-${ZSTD}.tar.gz | tar -xz -C /tmp \
+    && CFLAGS=-fPIC make -C /tmp/zstd-${ZSTD} -j"$(nproc)" >/dev/null && make -C /tmp/zstd-${ZSTD} install >/dev/null \
+    && rm -rf /tmp/zstd-${ZSTD} && ldconfig
 
 # node runs bun/*.ts; bun is what Bun's own build uses for its codegen steps.
 RUN arch=$(dpkg --print-architecture | sed 's/amd64/x64/') \
