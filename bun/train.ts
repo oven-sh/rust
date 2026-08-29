@@ -15,9 +15,10 @@
 // What gets built, and why that set:
 //   rust   Debug → a debug build then an incremental rebuild after a one-line edit (the local
 //                  loop); Opt → CI's release configuration with cross-language LTO (rustc emits
-//                  bitcode) for the host and for the other Linux arch, and without LTO (rustc
-//                  runs LLVM codegen itself); Doc → a tiny crate, only so rustdoc's profile is
-//                  not empty. Check is covered by Debug's front-end work.
+//                  bitcode) for the host and for each target Bun's CI cross-builds from Linux,
+//                  and without LTO (rustc runs LLVM codegen itself) for the host; Doc → a tiny
+//                  crate, only so rustdoc's profile is not empty. Check is covered by Debug's
+//                  front-end work.
 //   clang  a full release build + LTO link for the host (clang, lld's LTO backend for both the
 //          C++ and the Rust bitcode), then C++-only compiles for the targets Bun's CI
 //          cross-builds from Linux: the other Linux arch, macOS arm64, Windows x64.
@@ -79,7 +80,9 @@ function trainRust(): void {
   if (profiles.includes("Opt")) {
     bunBuild(b, "rust-release-lto", host, release, toolchain, "bun-rust");
     bunBuild(b, "rust-release", host, [...release, "--lto=off"], toolchain, "bun-rust");
-    bunBuild(b, `rust-release-lto-${otherLinux.arch}`, otherLinux, release, toolchain, "bun-rust");
+    for (const target of crossTargets) {
+      bunBuild(b, `rust-release-lto-${target.os}-${target.arch}`, target, release, toolchain, "bun-rust");
+    }
   }
   if (profiles.includes("Doc")) {
     const crate = join(config.trainDir, "rustdoc-sample");
