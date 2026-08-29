@@ -122,9 +122,13 @@ export function buildRust(o: Options): void {
   // 2. build opt-dist itself (dist.sh: `x.py build --set rust.debug=true opt-dist`)
   run(["python3", join(o.checkout, "x.py"), "build", "--set", "rust.debug=true", "opt-dist"], { cwd: p.rustBuild, env });
 
+  // Before the hours-long part: make sure the training workload can at least configure
+  // Bun here (stage0's rustc/cargo stand in for the compiler that does not exist yet).
+  chmodSync(join(o.checkout, "bun", "train.ts"), 0o755);
+  run([join(o.checkout, "bun", "train.ts"), "preflight", join(p.rustBuild, "build", o.triple, "stage0")], { env });
+
   // 3. the PGO/BOLT pipeline, ending in `x.py dist`
   const optDist = join(p.rustBuild, "build", o.triple, "stage1-tools-bin", "opt-dist");
-  chmodSync(join(o.checkout, "bun", "train.ts"), 0o755);
   run(
     [
       optDist,

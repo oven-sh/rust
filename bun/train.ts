@@ -3,6 +3,9 @@
 //
 //   train.ts            called by opt-dist (--training-command); compiler in OPT_DIST_*
 //   train.ts clang      called by LLVM's perf-training (bun/train-clang); compiler in CC/CXX
+//   train.ts preflight RUST_SYSROOT
+//                       called by toolchain.ts before the long builds: fetch Bun and run its
+//                       configure step once, so environment problems surface in minutes
 //
 // Everything else it needs comes from BUN_TRAIN_CONFIG (lib/train-config.ts).
 
@@ -14,8 +17,16 @@ import { readTrainingEnv, type TrainConfig } from "./lib/train-config.ts";
 
 const config = readTrainingEnv();
 ensureBunCheckout(config);
-if (process.argv[2] === "clang") trainClang(config);
-else trainRust(config);
+switch (process.argv[2]) {
+  case "clang":
+    trainClang(config);
+    break;
+  case "preflight":
+    bunBuild(config, "preflight", ["--profile=debug"], { BUN_TOOLCHAIN_LLVM: config.hostLlvm, BUN_TOOLCHAIN_RUST: requireArg(3, "RUST_SYSROOT") }, null);
+    break;
+  default:
+    trainRust(config);
+}
 
 /** What opt-dist asks for: rustc-perf profile names (Check, Debug, Opt, Doc) for the current phase. */
 function trainRust(c: TrainConfig): void {
@@ -59,8 +70,8 @@ function trainClang(c: TrainConfig): void {
   bunBuild(c, "clang-release-lto", ["--profile=ci-release", "--buildkite=off"], toolchain, "bun");
 }
 
-/** Configure a Bun build directory and build `target` in it; returns the directory. */
-function bunBuild(c: TrainConfig, name: string, args: string[], toolchain: Record<string, string>, target = "bun-rust"): string {
+/** Configure a Bun build directory and build `target` in it (null = configure only); returns the directory. */
+function bunBuild(c: TrainConfig, name: string, args: string[], toolchain: Record<string, string>, target: string | null = "bun-rust"): string {
   const dir = join(c.trainDir, name);
   remove(dir);
   const [os, arch] = c.host.split("-") as [string, string];
@@ -68,7 +79,7 @@ function bunBuild(c: TrainConfig, name: string, args: string[], toolchain: Recor
     [process.execPath, join(c.bunDir, "scripts", "build.ts"), ...args, `--os=${os}`, `--arch=${arch}`, `--buildDir=${dir}`, "--configure-only"],
     { cwd: c.bunDir, env: toolchain },
   );
-  ninja(c, dir, target);
+  if (target !== null) ninja(c, dir, target);
   return dir;
 }
 
@@ -92,6 +103,12 @@ function ensureBunCheckout(c: TrainConfig): void {
   run(["git", "fetch", "-q", "--depth=1", "origin", c.bunRef], { cwd: c.bunDir });
   run(["git", "checkout", "-q", "--force", "FETCH_HEAD"], { cwd: c.bunDir });
   write(stamp, c.bunRef);
+}
+
+function requireArg(index: number, name: string): string {
+  const v = process.argv[index];
+  if (v === undefined) throw new Error(`missing argument ${name}`);
+  return v;
 }
 
 function requireEnv(name: string): string {
