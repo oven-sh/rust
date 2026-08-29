@@ -71,11 +71,7 @@ const runShConfigureArgs = [
  * and the host compilers in bun/Dockerfile (upstream: self-built clang 22.1.0, GCC 9's
  * libstdc++.a; here: LLVM's 22.1.8 release binaries, GCC 13's libstdc++.a).
  */
-function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
-  // deviation (x64): upstream targets baseline x86-64; ours needs x86-64-v3 (Haswell,
-  // 2013+). Applies to rustc, its LLVM and jemalloc, cargo, and the shipped host
-  // rust-std (which Bun links only in debug builds; release rebuilds std).
-  const march = o.host === "linux-x64" ? "x86-64-v3" : undefined;
+function bunDeltas(o: Options): { drop: string[]; add: string[] } {
   return {
     drop: [
       "--enable-sccache", // build only: upstream's S3-backed compiler cache
@@ -96,11 +92,7 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
       // Smaller libLLVM.so to load, LTO and BOLT.
       "--set llvm.targets=AArch64;X86",
       "--set llvm.experimental-targets=",
-      ...(march ? [`--set llvm.cflags=-march=${march}`, `--set llvm.cxxflags=-march=${march}`] : []),
     ],
-    env: march
-      ? { RUSTFLAGS: `-Ctarget-cpu=${march}`, [`CFLAGS_${o.triple.replaceAll("-", "_")}`]: `-march=${march}`, [`CXXFLAGS_${o.triple.replaceAll("-", "_")}`]: `-march=${march}` }
-      : {},
   };
 }
 
@@ -135,7 +127,6 @@ export function buildRust(o: Options): void {
   mkdir(p.rustBuild);
   const env = {
     RUST_BOOTSTRAP_CONFIG: join(p.rustBuild, "bootstrap.toml"),
-    ...bunDeltas(o).env,
     // read by bun/train.ts when opt-dist calls it
     ...trainingEnv(o),
   };

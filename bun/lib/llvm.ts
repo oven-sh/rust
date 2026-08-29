@@ -42,8 +42,6 @@ export const DISTRIBUTION_COMPONENTS = [
  */
 export function releaseOverrides(o: Options): Record<string, string> {
   const p = paths(o);
-  // deviation (x64): upstream targets baseline x86-64; ours needs x86-64-v3 (Haswell, 2013+).
-  const march = o.host === "linux-x64" ? "-march=x86-64-v3" : "";
   // clang's bootstrap hands `BOOTSTRAP_<X>` to the next stage as `<X>`, so a setting for
   // all three stages is spelled three times.
   const everyStage = (name: string, value: string) => ({ [name]: value, [`BOOTSTRAP_${name}`]: value, [`BOOTSTRAP_BOOTSTRAP_${name}`]: value });
@@ -65,13 +63,6 @@ export function releaseOverrides(o: Options): Record<string, string> {
     // llvm-mt and lld-link's manifest merging need it; fail at configure rather than ship without.
     ...everyStage("LLVM_ENABLE_LIBXML2", "FORCE_ON"),
     ...everyStage("LLVM_PARALLEL_LINK_JOBS", String(Math.max(1, Math.floor(o.jobs / 8)))),
-
-    // The instrumented and the final stage are compiled for the same -march so the
-    // profile's inlining decisions line up.
-    BOOTSTRAP_CMAKE_C_FLAGS: march,
-    BOOTSTRAP_CMAKE_CXX_FLAGS: march,
-    BOOTSTRAP_BOOTSTRAP_CMAKE_C_FLAGS: march,
-    BOOTSTRAP_BOOTSTRAP_CMAKE_CXX_FLAGS: march,
 
     // compiler-rt (builtins, sanitizers, profile) for both Linux architectures Bun's CI
     // builds from one host, not just the native one. Upstream: native only. The cross
@@ -129,7 +120,7 @@ export function buildLlvm(o: Options): void {
     join(o.llvmProject, "llvm"),
     "-B",
     p.llvmBuild,
-    ...Object.entries(releaseOverrides(o)).filter(([, v]) => v !== "").map(([k, v]) => `-D${k}=${v}`),
+    ...Object.entries(releaseOverrides(o)).map(([k, v]) => `-D${k}=${v}`),
     "-C",
     join(o.llvmProject, "clang", "cmake", "caches", "Release.cmake"),
   ]);
