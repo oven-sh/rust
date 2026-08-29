@@ -63,30 +63,44 @@ const runShConfigureArgs = [
 ];
 
 /**
- * BOLT libLLVM.so + librustc_driver.so. Upstream: x86_64 only, with a FIXME to enable
- * aarch64 "once it's fixed upstream. Broken as of December 2024" (opt-dist main.rs).
- * We run it on both with the newer host llvm-bolt; --skip-bolt turns it off.
+ * BOLT. Upstream: libLLVM.so + librustc_driver.so, x86_64 only (aarch64 has a FIXME:
+ * "Enable bolt for aarch64 once it's fixed upstream. Broken as of December 2024",
+ * opt-dist main.rs). Here: both hosts, and since LLVM is linked into
+ * librustc_driver.so statically (below) that one library is what gets BOLTed.
+ * --skip-bolt turns it off.
  */
 const rustBolt = (o: Options): boolean => o.bolt;
 
 /**
- * Where this build deliberately differs from upstream. Each entry replaces or
- * removes an upstream argument; nothing here changes how rustc or std are compiled.
+ * Where this build differs from upstream. "build only" entries change what gets
+ * built or how the build runs, not the compiler that comes out; "deviation" entries
+ * do change the shipped binaries and say how.
  */
-function bunDeltas(o: Options): { drop: string[]; add: string[] } {
+function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
+  // deviation (x64): upstream targets baseline x86-64; ours needs x86-64-v3 (Haswell,
+  // 2013+), for rustc, its LLVM, cargo and the host std alike.
+  const march = o.host === "linux-x64" ? "x86-64-v3" : undefined;
   return {
     drop: [
-      "--enable-sccache", // upstream's S3-backed compiler cache; not available here
-      "--enable-compiler-docs", // rustc API docs: build time only, not shipped by us
-      "--disable-manage-submodules", // upstream CI pre-clones every submodule; let bootstrap fetch the ones it needs
+      "--enable-sccache", // build only: upstream's S3-backed compiler cache
+      "--enable-compiler-docs", // build only: rustc API docs
+      "--disable-manage-submodules", // build only: upstream CI pre-clones every submodule; let bootstrap fetch what it needs
+      "--set llvm.link-shared=true", // deviation: see link-shared=false below
     ],
     add: [
-      "--disable-docs",
-      `--set build.build-dir=${paths(o).rustBuild}/build`,
-      // upstream gets these from the Docker image's environment
+      "--disable-docs", // build only
+      `--set build.build-dir=${paths(o).rustBuild}/build`, // build only
+      // build only: upstream gets these from the Docker image's environment
       `--set target.${o.triple}.cc=${o.hostLlvm}/bin/clang`,
       `--set target.${o.triple}.cxx=${o.hostLlvm}/bin/clang++`,
+      // deviation: LLVM linked into librustc_driver.so statically rather than as
+      // libLLVM.so (upstream: shared, "to avoid re-doing ThinLTO with each stage").
+      // One fewer DSO boundary on every rustc→LLVM call; costs build time here.
+      "--set llvm.link-shared=false",
+      ...(march ? [`--set llvm.cflags=-march=${march}`, `--set llvm.cxxflags=-march=${march}`] : []),
     ],
+    // deviation (x64): -Ctarget-cpu for everything bootstrap compiles with rustc.
+    env: march ? { RUSTFLAGS: `-Ctarget-cpu=${march}` } : {},
   };
 }
 
@@ -100,11 +114,14 @@ export function configureArgs(o: Options): string[] {
 }
 
 /**
- * `x.py dist` arguments from dist.sh / the aarch64 SCRIPT, minus components Bun
- * does not use (enzyme, rustc_codegen_gcc, gcc).
+ * `x.py dist` arguments. Upstream (dist.sh / the aarch64 SCRIPT) builds every default
+ * dist component plus build-manifest, bootstrap, enzyme, rustc_codegen_gcc, gcc; we
+ * build the components Bun uses (rust-toolchain.toml in oven-sh/bun: rust-src,
+ * rustfmt, clippy, miri, llvm-tools, on top of rustc/cargo/std). build only.
  */
+export const SHIPPED_COMPONENTS = ["rustc", "rust-std", "cargo", "rust-src", "rustfmt", "clippy", "miri", "llvm-tools"];
 function distArgs(o: Options): string[] {
-  return ["--host", o.triple, "--target", o.triple, "--include-default-paths", "build-manifest", "bootstrap"];
+  return ["--host", o.triple, "--target", o.triple, ...SHIPPED_COMPONENTS];
 }
 
 export function buildRust(o: Options): void {
@@ -118,6 +135,7 @@ export function buildRust(o: Options): void {
   mkdir(p.rustBuild);
   const env = {
     RUST_BOOTSTRAP_CONFIG: join(p.rustBuild, "bootstrap.toml"),
+    ...bunDeltas(o).env,
     // read by bun/train.ts when opt-dist calls it
     ...trainingEnv(o),
   };
@@ -146,6 +164,7 @@ export function buildRust(o: Options): void {
       `--build-dir=${join(p.rustBuild, "build")}`,
       `--artifact-dir=${p.rustArtifacts}`,
       `--training-command=${join(o.checkout, "bun", "train.ts")}`,
+      "--llvm-shared=false",
       ...(rustBolt(o) ? ["--use-bolt"] : []),
       "--",
       "python3",
@@ -161,9 +180,6 @@ export function buildRust(o: Options): void {
   installDist(o);
   markDone(p.rustSysroot, key);
 }
-
-/** Components of `x.py dist` output that go into the Bun toolchain. */
-const SHIPPED_COMPONENTS = ["rustc", "rust-std", "cargo", "rust-src", "rustfmt", "clippy", "llvm-tools"];
 
 export function installDist(o: Options): void {
   const p = paths(o);

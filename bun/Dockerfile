@@ -52,7 +52,8 @@ RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 https://ftp.gnu.org/
     && /tmp/gcc-${GCC}/configure --prefix=/opt/gcc --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
          --disable-gnu-unique-object --enable-cxx-flags=-fno-reorder-blocks-and-partition >/dev/null \
     && make -j"$(nproc)" >/tmp/gcc-build.log 2>&1 || { tail -100 /tmp/gcc-build.log; exit 1; } \
-    && make install >/dev/null && cd / && rm -rf /tmp/gcc-${GCC} /tmp/gcc-build /tmp/gcc-build.log \
+    && make install >/dev/null && install -Dm644 -t /opt/gcc/share/licenses /tmp/gcc-${GCC}/COPYING3 /tmp/gcc-${GCC}/COPYING.RUNTIME \
+    && cd / && rm -rf /tmp/gcc-${GCC} /tmp/gcc-build /tmp/gcc-build.log \
     && echo /opt/gcc/lib64 > /etc/ld.so.conf.d/opt-gcc.conf && ldconfig \
     && printf -- '--gcc-install-dir=%s\n' "$(dirname "$(/opt/gcc/bin/gcc -print-libgcc-file-name)")" | tee /opt/llvm/bin/clang.cfg > /opt/llvm/bin/clang++.cfg \
     && /opt/llvm/bin/clang++ -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC installation: /opt/gcc"

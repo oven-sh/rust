@@ -1,27 +1,35 @@
 // clang + lld, built the way LLVM's release binaries are built —
 // clang/cmake/caches/Release.cmake: stage1 → stage2-instrumented (IR PGO) →
-// stage2 (profile-use + ThinLTO), with the clang binary BOLTed on Linux — plus
-// one input of ours: the PGO training workload is a Bun build
-// (CLANG_PGO_TRAINING_DATA_SOURCE_DIR → bun/train-clang → bun/train.ts clang).
+// stage2 (profile-use + ThinLTO) — with these inputs of ours:
+//   - the PGO training workload is a Bun build (CLANG_PGO_TRAINING_DATA_SOURCE_DIR
+//     → bun/train-clang → bun/train.ts clang);
+//   - BOLT: Release.cmake would BOLT `clang` with clang/utils/perf-training's small
+//     built-in lit suite. We turn that off and, after install, BOLT both `clang` and
+//     `lld` with a Bun build as the workload (same llvm-bolt flags as
+//     clang/utils/perf-training/perf-helper.py bolt-optimize). lld matters to us
+//     because Bun's cross-language ThinLTO link runs LLVM's backend inside lld.
 //
 // Upstream recipe, at src/llvm-project's pinned commit:
 //   clang/cmake/caches/Release.cmake
 //   clang/utils/perf-training/          (profile collection, BOLT post-link step)
-//   llvm/utils/release/build_llvm_release.bat / .github/workflows/release-binaries.yml (how it is invoked)
+//   .github/workflows/release-binaries.yml (how it is invoked)
 
+import { copyFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { isDone, markDone, mkdir } from "./fs.ts";
+import { isDone, markDone, mkdir, remove } from "./fs.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
 
 /**
  * -D settings passed ahead of `-C Release.cmake`. The LLVM_RELEASE_* ones are the
- * cache file's documented inputs; the rest narrow what gets built to what a Bun
- * build uses. None of them change how clang or lld themselves are compiled.
+ * cache file's documented inputs. Marked "deviation" where the resulting binaries
+ * differ from what upstream's recipe alone would produce.
  */
-function releaseOverrides(o: Options): Record<string, string> {
+export function releaseOverrides(o: Options): Record<string, string> {
   const p = paths(o);
+  // deviation (x64): upstream targets baseline x86-64; ours needs x86-64-v3 (Haswell, 2013+).
+  const march = o.host === "linux-x64" ? "-march=x86-64-v3" : "";
   return {
     // Release.cmake inputs. Upstream: clang;lld;lldb;clang-tools-extra;polly;mlir;flang;bolt and
     // compiler-rt;libcxx;openmp;libcxxabi;libunwind;flang-rt.
@@ -33,10 +41,16 @@ function releaseOverrides(o: Options): Record<string, string> {
 
     // Passed through to every stage (see CLANG_BOOTSTRAP_PASSTHROUGH below).
     CMAKE_INSTALL_PREFIX: p.llvmInstall,
-    // Upstream builds every backend; Bun targets x86_64 and aarch64 (+ wasm for completeness of
-    // rustc's wasm targets is rustc's own LLVM, not this one).
+    // Upstream builds every backend; Bun targets x86_64 and aarch64.
     LLVM_TARGETS_TO_BUILD: "X86;AArch64",
     LLVM_PARALLEL_LINK_JOBS: String(Math.max(1, Math.floor(o.jobs / 8))),
+
+    // The instrumented and the final stage are compiled for the same -march so the
+    // profile's inlining decisions line up.
+    BOOTSTRAP_CMAKE_C_FLAGS: march,
+    BOOTSTRAP_CMAKE_CXX_FLAGS: march,
+    BOOTSTRAP_BOOTSTRAP_CMAKE_C_FLAGS: march,
+    BOOTSTRAP_BOOTSTRAP_CMAKE_CXX_FLAGS: march,
 
     // compiler-rt (builtins, sanitizers, profile) for both Linux architectures Bun's CI
     // builds from one host, not just the native one. Upstream: native only. The cross
@@ -46,6 +60,10 @@ function releaseOverrides(o: Options): Record<string, string> {
     [`BOOTSTRAP_BOOTSTRAP_BUILTINS_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
     [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
     [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`]: "compiler-rt",
+
+    // BOLT is applied by boltWithBun() below instead (deviation: workload, and lld too).
+    // Release.cmake still links with --emit-relocs,-znow on Linux, which BOLT needs.
+    BOOTSTRAP_BOOTSTRAP_CLANG_BOLT: "OFF",
 
     // Stage 1 is built with the host LLVM.
     CMAKE_C_COMPILER: join(o.hostLlvm, "bin", "clang"),
@@ -71,8 +89,6 @@ export function buildLlvm(o: Options): void {
   }
 
   mkdir(p.llvmBuild);
-  const defines = releaseOverrides(o);
-  if (!o.bolt) defines.BOOTSTRAP_BOOTSTRAP_CLANG_BOLT = "OFF";
   run([
     "cmake",
     "-G",
@@ -81,7 +97,7 @@ export function buildLlvm(o: Options): void {
     join(o.llvmProject, "llvm"),
     "-B",
     p.llvmBuild,
-    ...Object.entries(defines).map(([k, v]) => `-D${k}=${v}`),
+    ...Object.entries(releaseOverrides(o)).filter(([, v]) => v !== "").map(([k, v]) => `-D${k}=${v}`),
     "-C",
     join(o.llvmProject, "clang", "cmake", "caches", "Release.cmake"),
   ]);
@@ -91,5 +107,49 @@ export function buildLlvm(o: Options): void {
   run(["ninja", "-C", p.llvmBuild, `-j${o.jobs}`, "stage2-install"], {
     env: { ...trainingEnv(o), NINJA_STATUS: "[%f/%t %es] " },
   });
+
+  if (o.bolt) boltWithBun(o);
   markDone(p.llvmInstall, key);
+}
+
+/** Binaries in the install's bin/ that get BOLTed: the clang driver binary and lld. */
+function boltTargets(installBin: string): string[] {
+  const clang = readdirSync(installBin).find(f => /^clang-\d+$/.test(f));
+  if (clang === undefined) throw new Error(`no clang-<major> binary in ${installBin}`);
+  return [clang, "lld"];
+}
+
+/**
+ * BOLT clang and lld in the install tree: instrument both in place, build Bun with
+ * them (bun/train.ts clang-bolt), then optimize the originals with the collected
+ * profile. llvm-bolt / merge-fdata are the ones just built (the `bolt` project).
+ */
+function boltWithBun(o: Options): void {
+  const p = paths(o);
+  const bin = join(p.llvmInstall, "bin");
+  const finalStageBin = join(p.llvmBuild, "tools", "clang", "stage2-instrumented-bins", "tools", "clang", "stage2-bins", "bin");
+  const llvmBolt = join(finalStageBin, "llvm-bolt");
+  const mergeFdata = join(finalStageBin, "merge-fdata");
+  const work = join(p.llvmBuild, "bun-bolt");
+  remove(work);
+  mkdir(work);
+
+  const targets = boltTargets(bin);
+  for (const name of targets) {
+    copyFileSync(join(bin, name), join(work, `${name}.prebolt`));
+    run([llvmBolt, join(work, `${name}.prebolt`), "-o", join(bin, name), "-instrument", "--instrumentation-file-append-pid", `--instrumentation-file=${join(work, name)}.fdata`]);
+  }
+
+  run([join(o.checkout, "bun", "train.ts"), "clang-bolt", p.llvmInstall], { env: trainingEnv(o) });
+
+  for (const name of targets) {
+    const profiles = readdirSync(work).filter(f => f.startsWith(`${name}.fdata`)).map(f => join(work, f));
+    if (profiles.length === 0) throw new Error(`BOLT: no profile was written for ${name}`);
+    run([mergeFdata, ...profiles, "-o", join(work, `${name}.merged.fdata`)], { capture: true });
+    // Flags: clang/utils/perf-training/perf-helper.py bolt_optimize().
+    run([
+      llvmBolt, join(work, `${name}.prebolt`), "-o", join(bin, name), "-data", join(work, `${name}.merged.fdata`),
+      "-reorder-blocks=ext-tsp", "-reorder-functions=cdsort", "-split-functions", "-split-all-cold", "-split-eh", "-dyno-stats", "-use-gnu-stack", "-update-debug-sections",
+    ]);
+  }
 }

@@ -1,108 +1,101 @@
 #!/usr/bin/env node
 // The PGO/BOLT training workload: build Bun with the compiler being profiled.
 //
-//   train.ts            called by opt-dist (--training-command); compiler in OPT_DIST_*
-//   train.ts clang      called by LLVM's perf-training (bun/train-clang); compiler in CC/CXX
+//   train.ts [rust]      from opt-dist (--training-command): rustc/cargo in OPT_DIST_*, plus
+//                        OPT_DIST_PROFILES saying which rustc-perf profiles the phase wants
+//   train.ts clang       from LLVM's perf-training (bun/train-clang): the instrumented clang in CC
+//   train.ts clang-bolt LLVM_DIR
+//                        from lib/llvm.ts with BOLT-instrumented clang/lld installed in LLVM_DIR
 //   train.ts preflight RUST_SYSROOT
-//                       called by toolchain.ts before the long builds: fetch Bun and run its
-//                       configure step once, so environment problems surface in minutes
+//                        from lib/rust.ts before the long builds: configure Bun once so
+//                        environment problems surface in minutes
 //
-// Everything else it needs comes from BUN_TRAIN_CONFIG (lib/train-config.ts).
+// Everything else comes from BUN_TRAIN_CONFIG (lib/train-config.ts).
+//
+// What gets built, and why that set:
+//   rust   Debug → a debug build then an incremental rebuild after a one-line edit (the local
+//                  loop); Opt → CI's release configuration with cross-language LTO (rustc emits
+//                  bitcode) for the host and for the other Linux arch, and without LTO (rustc
+//                  runs LLVM codegen itself); Doc → a tiny crate, only so rustdoc's profile is
+//                  not empty. Check is covered by Debug's front-end work.
+//   clang  a full release build + LTO link for the host (clang, lld's LTO backend for both the
+//          C++ and the Rust bitcode), then C++-only compiles for the targets Bun's CI
+//          cross-builds from Linux: the other Linux arch, macOS arm64, Windows x64.
+//   clang-bolt  the host release build + link only (BOLT-instrumented binaries are slow).
 
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { exists, mkdir, read, remove, write } from "./lib/fs.ts";
+import { type BunBuild, type BunTarget, bunBuild, checkoutBun, ninja, type Toolchain } from "./lib/bun-build.ts";
+import { exists, read, remove, write } from "./lib/fs.ts";
 import { run } from "./lib/run.ts";
-import { readTrainingEnv, type TrainConfig } from "./lib/train-config.ts";
+import { readTrainingEnv } from "./lib/train-config.ts";
 
 const config = readTrainingEnv();
-ensureBunCheckout(config);
-switch (process.argv[2]) {
+const b: BunBuild = { bunDir: config.bunDir, outDir: config.trainDir, jobs: config.jobs };
+const host: BunTarget = { os: "linux", arch: config.host === "linux-x64" ? "x64" : "aarch64" };
+const otherLinux: BunTarget = { os: "linux", arch: host.arch === "x64" ? "aarch64" : "x64" };
+const crossTargets: BunTarget[] = [otherLinux, { os: "darwin", arch: "aarch64" }, { os: "windows", arch: "x64" }];
+const release = ["--profile=ci-release", "--buildkite=off"];
+const cppOnly = ["--profile=ci-cpp-only", "--buildkite=off"];
+
+if (config.bunRef !== undefined) checkoutBun(config.bunDir, config.bunRef);
+else if (!exists(join(config.bunDir, "scripts", "build.ts"))) throw new Error(`--bun-dir ${config.bunDir} is not a Bun checkout`);
+
+const mode = process.argv[2] ?? "rust";
+switch (mode) {
+  case "rust":
+    trainRust();
+    break;
   case "clang":
-    trainClang(config);
+    trainClang({ llvm: dirname(dirname(requireEnv("CC"))), rust: config.rustSysroot }, true);
+    break;
+  case "clang-bolt":
+    trainClang({ llvm: requireArg(3, "LLVM_DIR"), rust: config.rustSysroot }, false);
     break;
   case "preflight":
-    bunBuild(config, "preflight", ["--profile=debug"], { BUN_TOOLCHAIN_LLVM: config.hostLlvm, BUN_TOOLCHAIN_RUST: requireArg(3, "RUST_SYSROOT") }, null);
+    bunBuild(b, "preflight", host, ["--profile=debug"], { llvm: config.hostLlvm, rust: requireArg(3, "RUST_SYSROOT") }, null);
     break;
   default:
-    trainRust(config);
+    throw new Error(`usage: train.ts rust|clang|clang-bolt LLVM_DIR|preflight RUST_SYSROOT (got ${mode})`);
 }
 
-/** What opt-dist asks for: rustc-perf profile names (Check, Debug, Opt, Doc) for the current phase. */
-function trainRust(c: TrainConfig): void {
+function trainRust(): void {
   const rustc = requireEnv("OPT_DIST_RUSTC");
   const cargo = requireEnv("OPT_DIST_CARGO");
   const profiles = requireEnv("OPT_DIST_PROFILES").split(",");
-  const toolchain = { BUN_TOOLCHAIN_LLVM: c.hostLlvm, BUN_TOOLCHAIN_RUST: dirname(dirname(rustc)), BUN_TOOLCHAIN_CARGO: cargo };
+  const toolchain: Toolchain = { llvm: config.hostLlvm, rust: dirname(dirname(rustc)), cargo };
 
   if (profiles.includes("Debug")) {
-    // A developer's loop: full debug build, then an incremental rebuild after a one-line edit.
-    const dir = bunBuild(c, "rust-debug", ["--profile=debug"], toolchain);
-    const edited = join(c.bunDir, "src", "runtime", "lib.rs");
+    const dir = bunBuild(b, "rust-debug", host, ["--profile=debug"], toolchain, "bun-rust");
+    const edited = join(config.bunDir, "src", "runtime", "lib.rs");
     const original = read(edited);
     appendFileSync(edited, "\n// bun toolchain training edit\n");
     try {
-      ninja(c, dir, "bun-rust");
+      ninja(b, dir, "bun-rust");
     } finally {
       write(edited, original);
     }
   }
   if (profiles.includes("Opt")) {
-    // CI's release configuration (cross-language LTO: rustc emits bitcode), and the
-    // non-LTO release configuration (rustc runs LLVM codegen itself).
-    bunBuild(c, "rust-release-lto", ["--profile=ci-release", "--buildkite=off"], toolchain);
-    bunBuild(c, "rust-release", ["--profile=ci-release", "--buildkite=off", "--lto=off"], toolchain);
+    bunBuild(b, "rust-release-lto", host, release, toolchain, "bun-rust");
+    bunBuild(b, "rust-release", host, [...release, "--lto=off"], toolchain, "bun-rust");
+    bunBuild(b, `rust-release-lto-${otherLinux.arch}`, otherLinux, release, toolchain, "bun-rust");
   }
   if (profiles.includes("Doc")) {
-    // opt-dist also optimizes rustdoc; give it something small so the profile is not empty.
-    const crate = join(c.trainDir, "rustdoc-sample");
+    const crate = join(config.trainDir, "rustdoc-sample");
     remove(crate);
     run([cargo, "new", "--lib", "--vcs=none", crate], { capture: true });
     run([cargo, "doc", "--quiet"], { cwd: crate, env: { RUSTC: rustc, RUSTDOC: requireEnv("OPT_DIST_RUSTDOC") } });
   }
-  // "Check" (cargo check) is covered by the Debug build's front-end work.
 }
 
-/** Called with the instrumented (or BOLT-instrumented) clang as CC/CXX: a full release build and link. */
-function trainClang(c: TrainConfig): void {
-  const cc = requireEnv("CC");
-  const toolchain = { BUN_TOOLCHAIN_LLVM: dirname(dirname(cc)), BUN_TOOLCHAIN_RUST: c.rustSysroot };
-  bunBuild(c, "clang-release-lto", ["--profile=ci-release", "--buildkite=off"], toolchain, "bun");
-}
-
-/** Configure a Bun build directory and build `target` in it (null = configure only); returns the directory. */
-function bunBuild(c: TrainConfig, name: string, args: string[], toolchain: Record<string, string>, target: string | null = "bun-rust"): string {
-  const dir = join(c.trainDir, name);
-  remove(dir);
-  const [os, arch] = c.host.split("-") as [string, string];
-  run(
-    [process.execPath, join(c.bunDir, "scripts", "build.ts"), ...args, `--os=${os}`, `--arch=${arch}`, `--buildDir=${dir}`, "--configure-only"],
-    { cwd: c.bunDir, env: toolchain },
-  );
-  if (target !== null) ninja(c, dir, target);
-  return dir;
-}
-
-function ninja(c: TrainConfig, dir: string, target: string): void {
-  run(["ninja", "-C", dir, `-j${c.jobs}`, target], { env: { NINJA_STATUS: "[%f/%t %es] " } });
-}
-
-function ensureBunCheckout(c: TrainConfig): void {
-  if (c.bunRef === undefined) {
-    if (!exists(join(c.bunDir, "scripts", "build.ts"))) throw new Error(`--bun-dir ${c.bunDir} is not a Bun checkout`);
-    return;
+function trainClang(toolchain: Toolchain, cross: boolean): void {
+  bunBuild(b, "clang-release-lto", host, release, toolchain, "bun");
+  if (!cross) return;
+  for (const target of crossTargets) {
+    // cpp-only: every C/C++ translation unit for that target, archived; no cargo, no link.
+    bunBuild(b, `clang-cpp-${target.os}-${target.arch}`, target, cppOnly, toolchain, "default");
   }
-  // Same shape as Bun's own dep fetcher: a .ref stamp says what is checked out.
-  const stamp = join(c.bunDir, ".bun-toolchain-ref");
-  if (exists(stamp) && read(stamp) === c.bunRef) return;
-  if (!exists(join(c.bunDir, ".git"))) {
-    mkdir(c.bunDir);
-    run(["git", "init", "-q"], { cwd: c.bunDir });
-    run(["git", "remote", "add", "origin", "https://github.com/oven-sh/bun.git"], { cwd: c.bunDir });
-  }
-  run(["git", "fetch", "-q", "--depth=1", "origin", c.bunRef], { cwd: c.bunDir });
-  run(["git", "checkout", "-q", "--force", "FETCH_HEAD"], { cwd: c.bunDir });
-  write(stamp, c.bunRef);
 }
 
 function requireArg(index: number, name: string): string {

@@ -7,7 +7,7 @@
 import { freemem, totalmem } from "node:os";
 import { statfsSync } from "node:fs";
 import { buildLlvm } from "./lib/llvm.ts";
-import { type Options, parseOptions, paths } from "./lib/options.ts";
+import { type Options, parseOptions } from "./lib/options.ts";
 import { packageToolchain } from "./lib/package.ts";
 import { buildRust } from "./lib/rust.ts";
 import { run } from "./lib/run.ts";

@@ -337,7 +337,17 @@ fn execute_pipeline(
         // therefore the LLVM artifacts on disk are not "tainted" with BOLT instrumentation and they can be reused.
         let libdir = env.build_artifacts().join("stage2").join("lib");
         timer.section("Stage 3 (BOLT)", |stage| {
-            let llvm_data = if env.build_llvm() {
+            if env.build_llvm() && !env.supports_shared_llvm() {
+                // Static LLVM: it is part of librustc_driver.so, so BOLT-ing that library below
+                // covers it. It only has to be the PGO-optimized LLVM by then.
+                stage.section("Build PGO optimized LLVM", |stage| {
+                    Bootstrap::build(env)
+                        .llvm_pgo_optimize(llvm_pgo_profile.as_ref())
+                        .avoid_rustc_rebuild()
+                        .run(stage)
+                })?;
+            }
+            let llvm_data = if env.build_llvm() && env.supports_shared_llvm() {
                 stage.section("Build PGO optimized LLVM", |stage| {
                     Bootstrap::build(env)
                         .with_llvm_bolt_ldflags()

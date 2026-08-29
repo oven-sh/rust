@@ -11,8 +11,8 @@ built against — and both are built with their upstream release recipes:
 
 | | upstream recipe | what we change |
 |---|---|---|
-| rustc, cargo | `src/ci/docker/host-*/dist-*-linux` + `src/tools/opt-dist` (how rustup's binaries are made: PGO'd LLVM, PGO'd rustc, BOLT on x86_64) | profiles are gathered by compiling Bun instead of rustc-perf (`opt-dist --training-command`); BOLT on aarch64 too; docs are not built |
-| clang, lld | `clang/cmake/caches/Release.cmake` (how LLVM's release tarballs are made: 3-stage PGO + ThinLTO, clang BOLTed on Linux) | the PGO training project is a Bun build; only the `clang`, `lld`, `bolt` projects and the `compiler-rt` runtime; only the X86 and AArch64 backends; compiler-rt additionally built for the other Linux architecture |
+| rustc, cargo | `src/ci/docker/host-*/dist-*-linux` + `src/tools/opt-dist` (how rustup's binaries are made: PGO'd LLVM, PGO'd rustc, BOLT on x86_64) | profiles gathered by compiling Bun instead of rustc-perf (`opt-dist --training-command`); LLVM linked into `librustc_driver` statically; BOLT on aarch64 too; x64 built for x86-64-v3; only the components Bun uses are dist'ed; docs are not built |
+| clang, lld | `clang/cmake/caches/Release.cmake` (how LLVM's release tarballs are made: 3-stage PGO + ThinLTO, clang BOLTed on Linux) | the PGO training project is a Bun build (host + the cross targets Bun's CI builds); clang **and lld** BOLTed with a Bun build instead of the built-in perf-training suite; x64 built for x86-64-v3; only the `clang`, `lld`, `bolt` projects and the `compiler-rt` runtime; only the X86 and AArch64 backends; compiler-rt additionally built for the other Linux architecture |
 
 The exact upstream arguments and each deviation are spelled out in
 [`lib/rust.ts`](lib/rust.ts) and [`lib/llvm.ts`](lib/llvm.ts). The commits on
@@ -27,10 +27,15 @@ Layout:
 
 ```
 bun-toolchain-linux-x64/
-  bin/            clang clang++ ld.lld ld64.lld lld-link llvm-ar llvm-objcopy … rustc cargo rustdoc rustfmt cargo-clippy
-  lib/            clang/<ver>/ (headers, compiler-rt) · librustc_driver-*.so · libLLVM.so.*-rust-* · rustlib/
-  toolchain.json  commits it was built from and trained on
+  bin/            clang clang++ ld.lld ld64.lld lld-link llvm-ar llvm-objcopy … rustc cargo rustdoc rustfmt cargo-clippy cargo-miri
+  lib/            clang/<ver>/ (headers; compiler-rt for x86_64 and aarch64 linux) · librustc_driver-*.so · rustlib/
+  licenses/
+  toolchain.json  commits it was built from and trained on, and the configure / cmake arguments used
 ```
+
+The `llvm + package` job ends by building Bun with the packaged toolchain and
+running `bun --version`; nothing is uploaded if that fails. The linux-x64
+toolchain requires an x86-64-v3 CPU (Haswell / Excavator or newer).
 
 Bun's build uses it via `BUN_TOOLCHAIN_LLVM` / `BUN_TOOLCHAIN_RUST`
 (`scripts/build/tools.ts` in oven-sh/bun).
@@ -62,7 +67,7 @@ Stages and where they write (under `--build-dir`, default `obj/bun-toolchain/`):
 
 1. **rust** → `rust/` (bootstrap build dir, `opt-artifacts/` profiles), installed to `rust-sysroot/`
 2. **llvm** → `llvm/` (all three CMake stages), installed to `llvm-install/`
-3. **package** → `out/bun-toolchain-<host>.tar.zst`
+3. **package** → `out/bun-toolchain-<host>.tar.zst` (after a smoke build of Bun with it)
 
 Training builds of Bun live in `train/`; the Bun checkout in `bun/`.
 
@@ -75,7 +80,8 @@ train-clang/          CMake project handed to Release.cmake as the PGO training 
 lib/options.ts        command line, pins, directory layout
 lib/rust.ts           rustc/cargo: upstream configure args + opt-dist
 lib/llvm.ts           clang/lld: Release.cmake
-lib/package.ts        tarball assembly
+lib/package.ts        tarball assembly + smoke build
+lib/bun-build.ts      driving Bun's scripts/build.ts (training and smoke)
 lib/train-config.ts   how toolchain.ts passes settings to train.ts
 lib/run.ts, lib/fs.ts small helpers
 Dockerfile            build environment (sets the toolchain's minimum glibc)
