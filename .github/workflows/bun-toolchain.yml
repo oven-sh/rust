@@ -30,8 +30,8 @@ permissions:
 
 env:
   TOOLCHAIN_ARGS: ${{ inputs.bun-ref && format('--bun-ref={0}', inputs.bun-ref) || '' }} ${{ inputs.skip-bolt && '--skip-bolt' || '' }}
-  # bun/Dockerfile, built once per Dockerfile change and kept in GHCR (private).
-  IMAGE: ghcr.io/${{ github.repository_owner }}/bun-toolchain-env:${{ hashFiles('bun/Dockerfile') }}
+  # bun/Dockerfile, built once per Dockerfile change and kept in GHCR; jobs append :<dockerfile hash>-<host>.
+  IMAGE: ghcr.io/${{ github.repository_owner }}/bun-toolchain-env
   # As the runner's user, so the checkout is trusted by git and outputs are owned
   # by the steps that upload them; HOME holds cargo/npm/bun caches.
   IN_CONTAINER: >-
@@ -59,7 +59,7 @@ jobs:
         run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Build and push (if missing)
         run: |
-          tag="$IMAGE-${{ matrix.host }}"
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
           if docker manifest inspect "$tag" >/dev/null 2>&1; then echo "$tag exists"; exit 0; fi
           docker build -t "$tag" bun
           docker push "$tag" || echo "::warning::could not push $tag; later jobs will rebuild the image"
@@ -82,8 +82,9 @@ jobs:
         run: git submodule update --init --depth=1 src/llvm-project
       - name: Container image
         run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker pull "$IMAGE-${{ matrix.host }}" && docker tag "$IMAGE-${{ matrix.host }}" bun-toolchain-env || docker build -t bun-toolchain-env bun
+          docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
       - name: Build rustc + cargo
         run: mkdir -p obj/home && GID=$(id -g) && eval "$IN_CONTAINER node bun/toolchain.ts rust $TOOLCHAIN_ARGS"
       - name: Pack sysroot
@@ -116,8 +117,9 @@ jobs:
         run: git submodule update --init --depth=1 src/llvm-project
       - name: Container image
         run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker pull "$IMAGE-${{ matrix.host }}" && docker tag "$IMAGE-${{ matrix.host }}" bun-toolchain-env || docker build -t bun-toolchain-env bun
+          docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { name: "rust-sysroot-${{ matrix.host }}", path: . }
       - name: Unpack sysroot
