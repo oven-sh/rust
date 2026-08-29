@@ -83,6 +83,9 @@ export function parseOptions(argv: string[]): Options {
     console.error(`unknown option(s): ${[...args.keys()].map(k => `--${k}`).join(", ")}`);
     usage();
   }
+  if (options.bunDir === undefined && !/^[0-9a-f]{40}$/.test(options.bunRef)) {
+    throw new Error(`--bun-ref must be a full 40-character commit sha (it is fetched shallowly by sha), got ${options.bunRef}`);
+  }
   return options;
 }
 
@@ -115,7 +118,7 @@ export function paths(o: Options) {
     /** opt-dist's PGO/BOLT profiles and logs */
     rustArtifacts: join(b, "rust", "opt-artifacts"),
     /** dist tarballs produced by `x.py dist` */
-    rustDist: join(b, "rust", "dist"),
+    rustDist: join(b, "rust", "build", "dist"),
     /** the rust dist tarballs installed into one sysroot (input to llvm training and to package) */
     rustSysroot: join(b, "rust-sysroot"),
     /** cmake binary dir of the Release.cmake multi-stage build */

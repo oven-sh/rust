@@ -339,10 +339,14 @@ fn execute_pipeline(
         timer.section("Stage 3 (BOLT)", |stage| {
             if env.build_llvm() && !env.supports_shared_llvm() {
                 // Static LLVM: it is part of librustc_driver.so, so BOLT-ing that library below
-                // covers it. It only has to be the PGO-optimized LLVM by then.
+                // covers it. Relink librustc_driver.so against the PGO-optimized LLVM first, with
+                // the same rustc PGO profile and BOLT link flags as the earlier "Build PGO
+                // optimized rustc" step (and as the final dist build), so only the link changes.
                 stage.section("Build PGO optimized LLVM", |stage| {
                     Bootstrap::build(env)
                         .llvm_pgo_optimize(llvm_pgo_profile.as_ref())
+                        .rustc_pgo_optimize(&rustc_pgo_profile)
+                        .with_rustc_bolt_ldflags()
                         .avoid_rustc_rebuild()
                         .run(stage)
                 })?;

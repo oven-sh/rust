@@ -33,8 +33,18 @@ export interface Toolchain {
 export function bunBuild(b: BunBuild, name: string, target: BunTarget, args: string[], toolchain: Toolchain, ninjaTarget: string | null): string {
   const dir = join(b.outDir, name);
   remove(dir);
-  const env: Record<string, string> = { BUN_TOOLCHAIN_LLVM: toolchain.llvm, BUN_TOOLCHAIN_RUST: toolchain.rust };
-  if (toolchain.cargo !== undefined) env.BUN_TOOLCHAIN_CARGO = toolchain.cargo;
+  // Only the toolchain selection reaches Bun's build; flags meant for building the
+  // toolchain itself (x.py's RUSTFLAGS, C(XX)FLAGS) do not.
+  const env: Record<string, string | undefined> = {
+    BUN_TOOLCHAIN_LLVM: toolchain.llvm,
+    BUN_TOOLCHAIN_RUST: toolchain.rust,
+    BUN_TOOLCHAIN_CARGO: toolchain.cargo,
+    RUSTFLAGS: undefined,
+    CARGO_ENCODED_RUSTFLAGS: undefined,
+    CFLAGS: undefined,
+    CXXFLAGS: undefined,
+    LDFLAGS: undefined,
+  };
   run(
     [process.execPath, join(b.bunDir, "scripts", "build.ts"), ...args, `--os=${target.os}`, `--arch=${target.arch}`, `--buildDir=${dir}`, "--configure-only"],
     { cwd: b.bunDir, env },

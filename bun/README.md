@@ -27,7 +27,7 @@ Layout:
 
 ```
 bun-toolchain-linux-x64/
-  bin/            clang clang++ ld.lld ld64.lld lld-link llvm-ar llvm-objcopy … rustc cargo rustdoc rustfmt cargo-clippy cargo-miri
+  bin/            clang clang++ clang-cl ld.lld ld64.lld lld-link llvm-ar llvm-objcopy … rustc cargo rustdoc rustfmt cargo-clippy cargo-miri
   lib/            clang/<ver>/ (headers; compiler-rt for x86_64 and aarch64 linux) · librustc_driver-*.so · rustlib/
   licenses/
   toolchain.json  commits it was built from and trained on, and the configure / cmake arguments used

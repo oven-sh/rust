@@ -20,7 +20,8 @@ export function run(argv: string[], opts: RunOptions = {}): string {
   const started = Date.now();
   const spawnOpts: SpawnSyncOptions = {
     cwd: opts.cwd,
-    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    // `undefined` in opts.env removes the variable
+    env: opts.env ? (Object.fromEntries(Object.entries({ ...process.env, ...opts.env }).filter(([, v]) => v !== undefined)) as Record<string, string>) : process.env,
     stdio: opts.capture ? ["ignore", "pipe", "inherit"] : "inherit",
     encoding: "utf8",
     maxBuffer: 1 << 30,

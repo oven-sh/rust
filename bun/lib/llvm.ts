@@ -73,7 +73,7 @@ export function releaseOverrides(o: Options): Record<string, string> {
     // The training workload, for the instrumented stage (BOOTSTRAP_ = second stage).
     BOOTSTRAP_CLANG_PGO_TRAINING_DATA_SOURCE_DIR: join(o.checkout, "bun", "train-clang"),
     // Bun's build needs these next to the instrumented clang it is pointed at.
-    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "lld;llvm-ar;llvm-ranlib;llvm-nm;llvm-objcopy;llvm-strip;llvm-symbolizer;llvm-profdata",
+    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "lld;llvm-ar;llvm-ranlib;llvm-nm;llvm-objcopy;llvm-strip;llvm-symbolizer;llvm-profdata;llvm-rc;llvm-mt;dsymutil",
 
     CLANG_BOOTSTRAP_PASSTHROUGH: "CMAKE_INSTALL_PREFIX;LLVM_TARGETS_TO_BUILD;LLVM_PARALLEL_LINK_JOBS",
   };
@@ -122,14 +122,14 @@ function boltTargets(installBin: string): string[] {
 /**
  * BOLT clang and lld in the install tree: instrument both in place, build Bun with
  * them (bun/train.ts clang-bolt), then optimize the originals with the collected
- * profile. llvm-bolt / merge-fdata are the ones just built (the `bolt` project).
+ * profile. llvm-bolt / merge-fdata are the ones just built and installed alongside
+ * (the `bolt` project; package.ts leaves them out of the tarball).
  */
 function boltWithBun(o: Options): void {
   const p = paths(o);
   const bin = join(p.llvmInstall, "bin");
-  const finalStageBin = join(p.llvmBuild, "tools", "clang", "stage2-instrumented-bins", "tools", "clang", "stage2-bins", "bin");
-  const llvmBolt = join(finalStageBin, "llvm-bolt");
-  const mergeFdata = join(finalStageBin, "merge-fdata");
+  const llvmBolt = join(bin, "llvm-bolt");
+  const mergeFdata = join(bin, "merge-fdata");
   const work = join(p.llvmBuild, "bun-bolt");
   remove(work);
   mkdir(work);

@@ -45,6 +45,7 @@ jobs:
   # publish packages; if it is not, the other jobs fall back to building it locally.
   image:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { host: linux-x64, runner: linux-x64-gh }

@@ -13,7 +13,7 @@ ARG CMAKE=3.30.5
 # (the training workload) additionally needs — the list scripts/bootstrap.sh in
 # oven-sh/bun installs on its CI image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev libstdc++-12-dev libxml2 libedit2 libncurses6 \
+      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev libstdc++-12-dev libxml2-dev libedit2 libncurses6 \
       build-essential make nasm libtool ruby perl golang-go \
       libgmp-dev libmpfr-dev libmpc-dev flex \
     && rm -rf /var/lib/apt/lists/*

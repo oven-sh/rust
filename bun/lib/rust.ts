@@ -1,6 +1,7 @@
 // rustc + cargo, built the way rust-lang's own dist-x86_64-linux / dist-aarch64-linux
-// builders build the toolchains rustup serves, with one difference: the PGO/BOLT
-// profiles are gathered by compiling Bun instead of the rustc-perf benchmark set.
+// builders build the toolchains rustup serves: their configure arguments, their
+// opt-dist PGO/BOLT pipeline. What differs is listed in bunDeltas() below; chiefly,
+// the profiles are gathered by compiling Bun instead of the rustc-perf benchmark set.
 //
 // Upstream recipe, at this repository's pinned commit:
 //   src/ci/docker/host-x86_64/dist-x86_64-linux/Dockerfile   (RUST_CONFIGURE_ARGS, dist.sh)
@@ -183,7 +184,7 @@ export function buildRust(o: Options): void {
 
 export function installDist(o: Options): void {
   const p = paths(o);
-  const dist = join(p.rustBuild, "build", "dist");
+  const dist = p.rustDist;
   remove(p.rustSysroot);
   mkdir(p.rustSysroot);
   const tarballs = readdirSync(dist).filter(f => f.endsWith(".tar.xz"));
