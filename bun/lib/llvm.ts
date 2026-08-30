@@ -40,8 +40,17 @@ export const DISTRIBUTION_COMPONENTS = [
  * cache file's documented inputs. Marked "deviation" where the resulting binaries
  * differ from what upstream's recipe alone would produce.
  */
+/**
+ * deviation (aarch64): what we BOLT is compiled without jump tables. AArch64 jump tables
+ * are addressed through an `adr` inside the function; in a function whose CFG llvm-bolt
+ * cannot fully rebuild that `adr` cannot be relaxed and llvm-bolt aborts ("cannot relax
+ * ADR in non-simple function"). It is a function attribute, so ThinLTO codegen honors it.
+ */
+export const NO_JUMP_TABLES = "-fno-jump-tables";
+
 export function releaseOverrides(o: Options): Record<string, string> {
   const p = paths(o);
+  const boltable = o.host === "linux-aarch64" && o.bolt ? NO_JUMP_TABLES : "";
   // clang's bootstrap hands `BOOTSTRAP_<X>` to the next stage as `<X>`, so a setting for
   // all three stages is spelled three times.
   const everyStage = (name: string, value: string) => ({ [name]: value, [`BOOTSTRAP_${name}`]: value, [`BOOTSTRAP_BOOTSTRAP_${name}`]: value });
@@ -79,6 +88,7 @@ export function releaseOverrides(o: Options): Record<string, string> {
     // repeated here because setting the variable pre-empts its set(). -pthread: mimalloc
     // uses pthread_key_*, which glibc < 2.34 keeps in libpthread.
     ...(o.mimalloc ? { BOOTSTRAP_BOOTSTRAP_CMAKE_EXE_LINKER_FLAGS: `-Wl,--emit-relocs,-znow -pthread ${o.mimalloc}` } : {}),
+    ...(boltable ? { BOOTSTRAP_BOOTSTRAP_CMAKE_C_FLAGS: boltable, BOOTSTRAP_BOOTSTRAP_CMAKE_CXX_FLAGS: boltable } : {}),
 
     // deviation: no dlopen'd plugin support in clang / LLVM passes. Nothing then has to stay
     // exported from the executables, so ThinLTO can internalize and inline across far more

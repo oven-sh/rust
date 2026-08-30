@@ -13,6 +13,7 @@
 import { chmodSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove } from "./fs.ts";
+import { NO_JUMP_TABLES } from "./llvm.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
@@ -71,7 +72,11 @@ const runShConfigureArgs = [
  * and the host compilers in bun/Dockerfile (upstream: self-built clang 22.1.0, GCC 9's
  * libstdc++.a; here: apt.llvm.org's clang 21, GCC 13's libstdc++.a).
  */
-function bunDeltas(o: Options): { drop: string[]; add: string[] } {
+function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
+  // deviation (aarch64): no jump tables in libLLVM.so / librustc_driver.so so llvm-bolt can
+  // process them (see NO_JUMP_TABLES in llvm.ts; upstream does not BOLT on aarch64 at all).
+  const boltable = o.host === "linux-aarch64" && o.bolt;
+  const triple_ = o.triple.replaceAll("-", "_");
   return {
     drop: [
       "--enable-sccache", // build only: upstream's S3-backed compiler cache
@@ -92,7 +97,9 @@ function bunDeltas(o: Options): { drop: string[]; add: string[] } {
       // Smaller libLLVM.so to load, LTO and BOLT.
       "--set llvm.targets=AArch64;X86",
       "--set llvm.experimental-targets=",
+      ...(boltable ? [`--set llvm.cflags=${NO_JUMP_TABLES}`, `--set llvm.cxxflags=${NO_JUMP_TABLES}`] : []),
     ],
+    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES } : {},
   };
 }
 
@@ -127,6 +134,7 @@ export function buildRust(o: Options): void {
   mkdir(p.rustBuild);
   const env = {
     RUST_BOOTSTRAP_CONFIG: join(p.rustBuild, "bootstrap.toml"),
+    ...bunDeltas(o).env,
     // read by bun/train.ts when opt-dist calls it
     ...trainingEnv(o),
   };

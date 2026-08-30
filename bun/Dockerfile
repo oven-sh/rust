@@ -102,11 +102,13 @@ RUN curl -fsSL --retry 8 --retry-delay 5 https://github.com/facebook/zstd/releas
 
 # mimalloc, linked statically into the clang and lld we ship (bun/lib/llvm.ts) in place of
 # glibc malloc. Built as the single override object so that putting it on the link line
-# is all it takes.
+# is all it takes. -fno-jump-tables on arm64: it ends up inside binaries llvm-bolt rewrites
+# (see NO_JUMP_TABLES in bun/lib/llvm.ts).
 ARG MIMALLOC=3.4.5
 RUN curl -fsSL --retry 8 https://github.com/microsoft/mimalloc/archive/refs/tags/v${MIMALLOC}.tar.gz | tar -xz -C /tmp \
     && cmake -G Ninja -S /tmp/mimalloc-${MIMALLOC} -B /tmp/mimalloc-build -DCMAKE_BUILD_TYPE=Release \
          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+         -DCMAKE_C_FLAGS="$([ "$(dpkg --print-architecture)" = arm64 ] && echo -fno-jump-tables)" \
          -DMI_OVERRIDE=ON -DMI_BUILD_OBJECT=ON -DMI_BUILD_STATIC=ON -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF >/dev/null \
     && ninja -C /tmp/mimalloc-build >/dev/null \
     && install -Dm644 /tmp/mimalloc-build/mimalloc.o /opt/mimalloc/mimalloc.o \
