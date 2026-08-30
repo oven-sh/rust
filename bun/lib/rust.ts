@@ -67,15 +67,14 @@ const runShConfigureArgs = [
  * Where this build differs from upstream. "build only" entries change what gets
  * built or how the build runs, not the compiler that comes out; "deviation" entries
  * change the shipped binaries and say how. Beyond this list: the PGO/BOLT training
- * workload (bun/train.ts instead of rustc-perf), BOLT on aarch64 too (upstream:
- * x86_64 only, "broken as of December 2024" per opt-dist), no post-dist test run,
+ * workload (bun/train.ts instead of rustc-perf), no post-dist test run,
  * and the host compilers in bun/Dockerfile (upstream: self-built clang 22.1.0, GCC 9's
  * libstdc++.a; here: apt.llvm.org's clang 21, GCC 13's libstdc++.a).
  */
 function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
-  // deviation (aarch64): no jump tables in libLLVM.so / librustc_driver.so so llvm-bolt can
-  // process them (see NO_JUMP_TABLES in llvm.ts; upstream does not BOLT on aarch64 at all).
-  const boltable = o.host === "linux-aarch64" && o.bolt;
+  // --aarch64-rust-bolt only (see Options.rustBolt): no jump tables in libLLVM.so /
+  // librustc_driver.so so llvm-bolt can process them (NO_JUMP_TABLES in llvm.ts).
+  const boltable = o.host === "linux-aarch64" && o.rustBolt;
   const triple_ = o.triple.replaceAll("-", "_");
   return {
     drop: [
@@ -125,7 +124,7 @@ function distArgs(o: Options): string[] {
 
 export function buildRust(o: Options): void {
   const p = paths(o);
-  const key = `rust-${RECIPE_VERSION}-${run(["git", "rev-parse", "HEAD"], { cwd: o.checkout, capture: true }).trim()}-bolt=${o.bolt}`;
+  const key = `rust-${RECIPE_VERSION}-${run(["git", "rev-parse", "HEAD"], { cwd: o.checkout, capture: true }).trim()}-bolt=${o.rustBolt}`;
   if (isDone(p.rustInstall, key)) {
     console.log(`rust: up to date (${key})`);
     return;
@@ -163,7 +162,7 @@ export function buildRust(o: Options): void {
       `--build-dir=${join(p.rustBuild, "build")}`,
       `--artifact-dir=${p.rustArtifacts}`,
       `--training-command=${join(o.checkout, "bun", "train.ts")}`,
-      ...(o.bolt ? ["--use-bolt"] : []),
+      ...(o.rustBolt ? ["--use-bolt"] : []),
       "--",
       "python3",
       join(o.checkout, "x.py"),

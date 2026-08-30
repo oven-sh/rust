@@ -50,7 +50,7 @@ export const NO_JUMP_TABLES = "-fno-jump-tables";
 
 export function releaseOverrides(o: Options): Record<string, string> {
   const p = paths(o);
-  const boltable = o.host === "linux-aarch64" && o.bolt ? NO_JUMP_TABLES : "";
+  const boltable = o.host === "linux-aarch64" && o.llvmBolt ? NO_JUMP_TABLES : "";
   // clang's bootstrap hands `BOOTSTRAP_<X>` to the next stage as `<X>`, so a setting for
   // all three stages is spelled three times.
   const everyStage = (name: string, value: string) => ({ [name]: value, [`BOOTSTRAP_${name}`]: value, [`BOOTSTRAP_BOOTSTRAP_${name}`]: value });
@@ -69,8 +69,13 @@ export function releaseOverrides(o: Options): Record<string, string> {
     CMAKE_INSTALL_PREFIX: p.llvmInstall, // the bootstrap forwards this one itself
     // Upstream builds every backend; Bun targets x86_64 and aarch64.
     ...everyStage("LLVM_TARGETS_TO_BUILD", "X86;AArch64"),
-    // llvm-mt and lld-link's manifest merging need it; fail at configure rather than ship without.
+    // llvm-mt and lld-link's manifest merging need libxml2; fail at configure rather than ship
+    // without, and link the image's static build (bun/Dockerfile) so the binaries do not
+    // depend on a host libxml2.so — its soname differs between distros.
     ...everyStage("LLVM_ENABLE_LIBXML2", "FORCE_ON"),
+    ...everyStage("LIBXML2_LIBRARY", "/opt/libxml2/lib/libxml2.a"),
+    ...everyStage("LIBXML2_INCLUDE_DIR", "/opt/libxml2/include/libxml2"),
+    ...everyStage("CMAKE_PREFIX_PATH", "/opt/libxml2"),
     ...everyStage("LLVM_PARALLEL_LINK_JOBS", String(Math.max(1, Math.floor(o.jobs / 8)))),
 
     // compiler-rt (builtins, sanitizers, profile) for both Linux architectures Bun's CI
@@ -88,7 +93,8 @@ export function releaseOverrides(o: Options): Record<string, string> {
     // repeated here because setting the variable pre-empts its set(). -pthread: mimalloc
     // uses pthread_key_*, which glibc < 2.34 keeps in libpthread.
     ...(o.mimalloc ? { BOOTSTRAP_BOOTSTRAP_CMAKE_EXE_LINKER_FLAGS: `-Wl,--emit-relocs,-znow -pthread ${o.mimalloc}` } : {}),
-    ...(boltable ? { BOOTSTRAP_BOOTSTRAP_CMAKE_C_FLAGS: boltable, BOOTSTRAP_BOOTSTRAP_CMAKE_CXX_FLAGS: boltable } : {}),
+    // Instrumented stage too, so its profile matches the final stage's control flow.
+    ...(boltable ? { BOOTSTRAP_CMAKE_C_FLAGS: boltable, BOOTSTRAP_CMAKE_CXX_FLAGS: boltable, BOOTSTRAP_BOOTSTRAP_CMAKE_C_FLAGS: boltable, BOOTSTRAP_BOOTSTRAP_CMAKE_CXX_FLAGS: boltable } : {}),
 
     // deviation: no dlopen'd plugin support in clang / LLVM passes. Nothing then has to stay
     // exported from the executables, so ThinLTO can internalize and inline across far more
@@ -118,7 +124,7 @@ export function releaseOverrides(o: Options): Record<string, string> {
 export function buildLlvm(o: Options): void {
   const p = paths(o);
   const llvmRev = run(["git", "rev-parse", "HEAD"], { cwd: o.llvmProject, capture: true }).trim();
-  const key = `llvm-${RECIPE_VERSION}-${llvmRev}-bolt=${o.bolt}-mimalloc=${o.mimalloc !== undefined}`;
+  const key = `llvm-${RECIPE_VERSION}-${llvmRev}-bolt=${o.llvmBolt}-mimalloc=${o.mimalloc !== undefined}`;
   if (isDone(p.llvmInstall, key)) {
     console.log(`llvm: up to date (${key})`);
     return;
@@ -152,7 +158,7 @@ export function buildLlvm(o: Options): void {
     env: { ...trainingEnv(o), NINJA_STATUS: "[%f/%t %es] " },
   });
 
-  if (o.bolt) boltWithBun(o);
+  if (o.llvmBolt) boltWithBun(o);
   // For package.ts, so that job needs no llvm-project checkout.
   for (const [name, src] of Object.entries(LLVM_LICENSES)) cpSync(join(o.llvmProject, src), join(p.llvmInstall, "licenses", name));
   const mimallocLicense = o.mimalloc && join(o.mimalloc, "..", "LICENSE"); // where bun/Dockerfile puts it

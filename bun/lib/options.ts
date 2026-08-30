@@ -36,7 +36,15 @@ export interface Options {
   bunRef: string;
   bunDir: string | undefined;
   jobs: number;
-  bolt: boolean;
+  /** BOLT clang and lld (lib/llvm.ts). */
+  llvmBolt: boolean;
+  /**
+   * BOLT rustc's libLLVM.so and librustc_driver.so (opt-dist stage 3). Off on aarch64 unless
+   * --aarch64-rust-bolt: there llvm-bolt 21 instruments, profiles and optimizes both libraries,
+   * inserts its long-jump stubs, and then never finishes writing the output (killed after 3.5 h;
+   * x64 takes ~150 s). Upstream does not BOLT on aarch64 either ("broken", rust-lang/rust#133807).
+   */
+  rustBolt: boolean;
 }
 
 export function parseOptions(argv: string[]): Options {
@@ -80,8 +88,10 @@ export function parseOptions(argv: string[]): Options {
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),
     jobs: Number(take("jobs") ?? availableParallelism()),
-    bolt: take("skip-bolt") === undefined,
+    llvmBolt: take("skip-bolt") === undefined,
+    rustBolt: false,
   };
+  options.rustBolt = options.llvmBolt && (options.host !== "linux-aarch64" || take("aarch64-rust-bolt") !== undefined);
   if (args.size > 0) {
     console.error(`unknown option(s): ${[...args.keys()].map(k => `--${k}`).join(", ")}`);
     usage();
@@ -109,7 +119,8 @@ options:
   --bun-ref=SHA        oven-sh/bun commit to train on (default: pinned)
   --bun-dir=DIR        use this Bun checkout instead of cloning --bun-ref
   --jobs=N             parallelism (default: all cores)
-  --skip-bolt          PGO only`);
+  --skip-bolt          PGO only
+  --aarch64-rust-bolt  also BOLT rustc's libraries on aarch64 (experimental; hangs in llvm-bolt 21)`);
   process.exit(2);
 }
 

@@ -15,7 +15,7 @@ ARG CMAKE=3.30.5
 # (the training workload) additionally needs — the list scripts/bootstrap.sh in
 # oven-sh/bun installs on its CI image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev g++-10 libstdc++-10-dev libxml2-dev libedit2 libncurses6 \
+      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev g++-10 libstdc++-10-dev libedit2 libncurses6 \
       build-essential make nasm libtool ruby perl \
       libgmp-dev libmpfr-dev libmpc-dev flex \
     && rm -rf /var/lib/apt/lists/*
@@ -99,6 +99,16 @@ ARG ZSTD=1.5.6
 RUN curl -fsSL --retry 8 --retry-delay 5 https://github.com/facebook/zstd/releases/download/v${ZSTD}/zstd-${ZSTD}.tar.gz | tar -xz -C /tmp \
     && CFLAGS=-fPIC make -C /tmp/zstd-${ZSTD} -j"$(nproc)" >/dev/null && make -C /tmp/zstd-${ZSTD} install >/dev/null \
     && rm -rf /tmp/zstd-${ZSTD} && ldconfig
+
+# libxml2 for lld (Windows manifest merging) and llvm-mt, static and without ICU/lzma so
+# the shipped binaries do not depend on the host's libxml2 soname (2.14 renamed it).
+ARG LIBXML2=2.9.14
+RUN curl -fsSL --retry 8 https://download.gnome.org/sources/libxml2/${LIBXML2%.*}/libxml2-${LIBXML2}.tar.xz | tar -xJ -C /tmp \
+    && cd /tmp/libxml2-${LIBXML2} \
+    && CFLAGS="-O2 -fPIC" ./configure --prefix=/opt/libxml2 --enable-static --disable-shared \
+         --without-python --without-icu --without-lzma --without-zlib --without-http --without-ftp -q >/dev/null \
+    && make -j"$(nproc)" -s >/dev/null && make -s install >/dev/null \
+    && cd / && rm -rf /tmp/libxml2-${LIBXML2} && test -f /opt/libxml2/lib/libxml2.a
 
 # mimalloc, linked statically into the clang and lld we ship (bun/lib/llvm.ts) in place of
 # glibc malloc. Built as the single override object so that putting it on the link line
