@@ -18,12 +18,11 @@
 // Everything else comes from BUN_TRAIN_CONFIG (lib/train-config.ts).
 //
 // What gets built, and why that set:
-//   rust   Debug → a debug build then an incremental rebuild after a one-line edit (the local
-//                  loop); Opt → CI's release configuration with cross-language LTO (rustc emits
-//                  bitcode) for the host and for each target Bun's CI cross-builds from Linux,
-//                  and without LTO (rustc runs LLVM codegen itself) for the host; Doc → a tiny
-//                  crate, only so rustdoc's profile is not empty. Check is covered by Debug's
-//                  front-end work.
+//   rust   Opt → CI's release configuration with cross-language LTO (rustc emits bitcode) for
+//                  the host and for each target Bun's CI cross-builds from Linux, and without
+//                  LTO (rustc runs LLVM codegen itself, as the non-LTO CI lanes do) for the host;
+//                  Doc → a tiny crate, only so rustdoc's profile is not empty. Debug and Check
+//                  add nothing CI runs (front-end work is the same in a release build).
 //   clang  a full release build + LTO link for the host (clang, lld's LTO backend for both the
 //          C++ and the Rust bitcode), then C++-only compiles for the targets Bun's CI
 //          cross-builds from Linux: the other Linux arch, macOS arm64, Windows x64.
@@ -31,10 +30,9 @@
 //          BOLT-instrumented binaries are several times slower, and code layout needs the
 //          hot paths, not coverage.
 
-import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type BunBuild, type BunTarget, bunBuild, checkoutBun, ninja, type Toolchain } from "./lib/bun-build.ts";
-import { exists, read, remove, write } from "./lib/fs.ts";
+import { type BunBuild, type BunTarget, bunBuild, checkoutBun, type Toolchain } from "./lib/bun-build.ts";
+import { exists, remove } from "./lib/fs.ts";
 import { run } from "./lib/run.ts";
 import { readTrainingEnv } from "./lib/train-config.ts";
 
@@ -80,18 +78,6 @@ function trainRust(): void {
   const bolt = requireEnv("OPT_DIST_PHASE") === "bolt";
   const toolchain: Toolchain = { llvm: config.hostLlvm, rust: dirname(dirname(rustc)), cargo };
 
-  if (profiles.includes("Debug") && !bolt) {
-    const dir = bunBuild(b, "rust-debug", host, ["--profile=debug"], toolchain, "bun-rust");
-    const edited = join(config.bunDir, "src", "runtime", "lib.rs");
-    const original = read(edited);
-    appendFileSync(edited, "\n// bun toolchain training edit\n");
-    try {
-      ninja(b, dir, "bun-rust");
-    } finally {
-      write(edited, original);
-    }
-    remove(dir);
-  }
   if (profiles.includes("Opt")) {
     remove(bunBuild(b, "rust-release-lto", host, release, toolchain, "bun-rust"));
     remove(bunBuild(b, "rust-release", host, [...release, "--lto=off"], toolchain, "bun-rust"));
