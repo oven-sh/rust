@@ -185,9 +185,8 @@ function boltWithBun(o: Options): void {
     run([llvmBolt, join(work, `${name}.prebolt`), "-o", join(bin, name), "-instrument", "--instrumentation-file-append-pid", `--instrumentation-file=${join(work, name)}.fdata`]);
   }
 
-  // LLD_IN_TEST=1: lld normally leaves through _exit, skipping the exit-time hook
-  // BOLT's instrumentation runtime writes its profile from; in "test" mode it runs the
-  // link once and returns from main. Same output, slower shutdown.
+  // LLD_IN_TEST=1 as in train-clang/CMakeLists.txt: lld must return from main for
+  // BOLT's runtime to write its profile at exit.
   run([join(o.checkout, "bun", "train.ts"), "clang-bolt", p.llvmInstall], { env: { ...trainingEnv(o), LLD_IN_TEST: "1" } });
 
   for (const name of targets) {

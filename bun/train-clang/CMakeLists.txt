@@ -7,11 +7,13 @@ project(bun-toolchain-training LANGUAGES NONE)
 
 find_program(NODE node REQUIRED)
 
-# One .profraw per 4-way merge pool instead of a single file every clang process locks
-# (perf-training's own lit run does the same); LLVM_BINARY_DIR is the instrumented stage's.
+# LLVM_PROFILE_FILE: one .profraw per 4-way merge pool instead of a single file every clang
+# process locks (perf-training's own lit run does the same); LLVM_BINARY_DIR is the
+# instrumented stage's. LLD_IN_TEST=1: lld otherwise leaves through _exit and the profile
+# runtime's atexit writer never runs, i.e. the links would contribute nothing.
 add_custom_target(train-on-bun ALL
   COMMAND ${CMAKE_COMMAND} -E env CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER}
-          LLVM_PROFILE_FILE=${LLVM_BINARY_DIR}/profiles/bun-%4m.profraw
+          LLVM_PROFILE_FILE=${LLVM_BINARY_DIR}/profiles/bun-%4m.profraw LLD_IN_TEST=1
           ${NODE} ${CMAKE_CURRENT_SOURCE_DIR}/../train.ts clang
   USES_TERMINAL
   COMMENT "Building Bun with the instrumented clang")
