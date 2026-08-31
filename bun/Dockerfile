@@ -48,6 +48,43 @@ RUN set -e; for sr_arch in x86_64 aarch64; do \
       for deb in "$tmp"/gcc13/*.deb; do dpkg-deb -x "$deb" "$sysroot"; done; \
       test -f "$sysroot/usr/include/stdio.h" && test -e "$sysroot/lib/$sr_arch-linux-gnu/libc.so.6" && test -d "$sysroot/usr/include/c++/13"; rm -rf "$tmp"; \
     done
+# The other sysroots Bun's CI lanes cross-compile against, again as scripts/bootstrap.sh
+# makes them (install_linux_musl_sysroot, install_freebsd_sysroot, install_android_ndk) and
+# at the paths scripts/build/config.ts looks for them. Versions: bootstrap.sh's
+# alpine_sysroot_version / freebsd_version / android_ndk_version.
+ARG ALPINE=3.23
+ARG FREEBSD=14.3
+ARG ANDROID_NDK=r27c
+# musl + libstdc++ from Alpine's own packages, installed with apk.static (which can populate
+# a root for either architecture).
+RUN set -e; cdn=https://dl-cdn.alpinelinux.org/alpine/v${ALPINE}; m=$(uname -m); tmp=$(mktemp -d); \
+    apk_ver=$(curl -fsSL --retry 8 "$cdn/main/$m/APKINDEX.tar.gz" | tar -xzO APKINDEX | awk '/^P:apk-tools-static$/{f=1} f&&/^V:/{print substr($0,3); exit}'); \
+    curl -fsSL --retry 8 "$cdn/main/$m/apk-tools-static-$apk_ver.apk" | tar -xz -C "$tmp" sbin/apk.static 2>/dev/null; \
+    for ml_arch in x86_64 aarch64; do \
+      case $ml_arch in x86_64) sysroot=/opt/linux-sysroot-musl ;; aarch64) sysroot=/opt/linux-sysroot-musl-arm64 ;; esac; \
+      mkdir -p "$sysroot"; \
+      "$tmp/sbin/apk.static" --arch "$ml_arch" --root "$sysroot" --repository "$cdn/main" --allow-untrusted --no-cache \
+        add --initdb musl-dev libc-dev linux-headers g++ libstdc++-dev >/dev/null; \
+      test -f "$sysroot/usr/lib/libc.so"; \
+    done; rm -rf "$tmp"
+# FreeBSD base system headers + libraries.
+RUN set -e; for fb_arch in amd64 arm64; do \
+      case $fb_arch in amd64) sysroot=/opt/freebsd-sysroot ;; arm64) sysroot=/opt/freebsd-sysroot-arm64 ;; esac; \
+      mkdir -p "$sysroot"; \
+      curl -fsSL --retry 8 "https://download.freebsd.org/releases/$fb_arch/${FREEBSD}-RELEASE/base.txz" | tar -xJ -C "$sysroot" ./usr/include ./usr/lib ./lib; \
+      test -f "$sysroot/usr/include/sys/param.h" && test -f "$sysroot/lib/libc.so.7"; \
+    done
+# Android NDK (sysroot + its compiler-rt builtins/libunwind), trimmed of its own toolchain
+# binaries the way bootstrap.sh trims it. Bun's configure symlinks the NDK runtimes into the
+# resource directory of whichever clang it is given (it can for the compilers this build
+# produces; for the root-owned host LLVM it is done below, once that is installed).
+RUN set -e; tmp=$(mktemp -d); \
+    curl -fsSL --retry 8 -o "$tmp/ndk.zip" "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK}-linux.zip"; \
+    unzip -q "$tmp/ndk.zip" -d /opt && mv /opt/android-ndk-${ANDROID_NDK} /opt/android-ndk && rm -rf "$tmp"; \
+    p=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64; \
+    rm -rf "$p/bin" "$p/python3" "$p/lib/liblldb.so" /opt/android-ndk/simpleperf /opt/android-ndk/shader-tools /opt/android-ndk/sources; \
+    test -d "$p/sysroot/usr/include" && ls "$p"/lib/clang/*/lib/linux/libclang_rt.builtins-aarch64-android.a >/dev/null
+ENV ANDROID_NDK_ROOT=/opt/android-ndk
 # CMake: LLVM wants >= 3.20, Bun's build >= 3.24; focal has 3.16. Same source as Bun's bootstrap.sh.
 RUN curl -fsSL --retry 8 --retry-delay 5 \
       https://github.com/Kitware/CMake/releases/download/v${CMAKE}/cmake-${CMAKE}-linux-$(uname -m).tar.gz \
@@ -90,7 +127,15 @@ RUN { curl -fsSL --retry 3 https://ftpmirror.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GC
     && dirname "$(/opt/gcc/bin/gcc -print-file-name=libstdc++.so.6)" > /etc/ld.so.conf.d/00-opt-gcc.conf && ldconfig \
     && ldconfig -p | grep -m1 'libstdc++.so.6 ' | grep -q /opt/gcc \
     && printf -- '--gcc-install-dir=%s\n' "$(dirname "$(/opt/gcc/bin/gcc -print-libgcc-file-name)")" | tee /opt/llvm/bin/clang.cfg > /opt/llvm/bin/clang++.cfg \
-    && /opt/llvm/bin/clang++ -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC installation: /opt/gcc"
+    && /opt/llvm/bin/clang++ -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC installation: /opt/gcc" \
+    && res=$(/opt/llvm/bin/clang -print-resource-dir) && ndk_rt=$(echo /opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/*/lib/linux) \
+    && for a in aarch64 x86_64; do \
+         mkdir -p "$res/lib/linux/$a" "$res/lib/$a-unknown-linux-android28"; \
+         ln -sf "$ndk_rt/libclang_rt.builtins-$a-android.a" "$res/lib/linux/"; \
+         ln -sf "$ndk_rt/$a/libunwind.a" "$res/lib/linux/$a/"; \
+         ln -sf "$ndk_rt/libclang_rt.builtins-$a-android.a" "$res/lib/$a-unknown-linux-android28/libclang_rt.builtins.a"; \
+         ln -sf "$ndk_rt/$a/libunwind.a" "$res/lib/$a-unknown-linux-android28/libunwind.a"; \
+       done
 
 # zstd for `llvm.libzstd=true`, built as upstream's src/ci/docker/scripts/build-zstd.sh
 # does. (Ubuntu's libzstd.a is GCC-built with hot/cold-split functions and no FILE

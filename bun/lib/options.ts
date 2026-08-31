@@ -1,7 +1,7 @@
 // Command line and fixed inputs of the toolchain build.
 
 import { availableParallelism } from "node:os";
-import { findVariant, type Variant } from "./variants.ts";
+import { findVariant, type Variant, variantsFor } from "./variants.ts";
 import { join, resolve } from "node:path";
 
 /** Bump when the recipe changes in a way that must not reuse earlier stage outputs. */
@@ -107,7 +107,8 @@ export function parseOptions(argv: string[]): Options {
     bunDir: take("bun-dir"),
     variantFilter: take("variants")?.split(","),
     jobs: Number(take("jobs") ?? availableParallelism()),
-    variant: findVariant(host, take("variant") ?? "dev"),
+    // llvm-instrumented, matrix and probe do not depend on the variant; the default only has to exist.
+    variant: findVariant(host, take("variant") ?? variantsFor(host)[0]!.name),
     llvmBolt: take("skip-bolt") === undefined,
     rustBolt: false,
   };
@@ -137,7 +138,7 @@ options:
   --bun-ref=SHA        oven-sh/bun commit to train on (default: pinned)
   --bun-dir=DIR        use this Bun checkout instead of cloning --bun-ref
   --jobs=N             parallelism (default: all cores)
-  --variant=NAME       which Bun build to train on: ci-<os>-<arch>[-<abi>|-asan] or dev (default: dev)
+  --variant=NAME       which Bun build to train on: ci-<os>-<arch>[-<abi>|-asan] or dev (lib/variants.ts)
   --variants=A,B       (matrix) only these variants
   --skip-bolt          PGO only
   --aarch64-rust-bolt  also BOLT rustc's libraries on aarch64 (experimental; hangs in llvm-bolt 21)`);
