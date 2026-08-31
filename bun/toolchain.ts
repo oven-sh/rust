@@ -47,6 +47,7 @@ function probe(o: Options): void {
     console.log(`${tool[0]!.padEnd(12)}${version(tool)}`);
   }
   console.log(`bun ref     ${o.bunDir ?? o.bunRef}`);
+  console.log(`variant     ${o.variant.name} (${[`--os=${o.variant.target.os}`, `--arch=${o.variant.target.arch}`, ...o.variant.args].join(" ")})`);
   console.log(`bolt        llvm: ${o.llvmBolt ? "yes" : "no"}, rust: ${o.rustBolt ? "yes" : "no"}`);
   console.log(`mimalloc    ${o.mimalloc ?? "no (libc malloc)"}\n`);
 }

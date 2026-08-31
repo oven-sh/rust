@@ -73,19 +73,23 @@ export function releaseOverrides(o: Options): Record<string, string> {
     // without, and link the image's static build (bun/Dockerfile) so the binaries do not
     // depend on a host libxml2.so — its soname differs between distros.
     ...everyStage("LLVM_ENABLE_LIBXML2", "FORCE_ON"),
-    ...everyStage("LIBXML2_LIBRARY", "/opt/libxml2/lib/libxml2.a"),
-    ...everyStage("LIBXML2_INCLUDE_DIR", "/opt/libxml2/include/libxml2"),
-    ...everyStage("CMAKE_PREFIX_PATH", "/opt/libxml2"),
+    ...everyStage("LIBXML2_LIBRARY", join(o.libxml2, "lib", "libxml2.a")),
+    ...everyStage("LIBXML2_INCLUDE_DIR", join(o.libxml2, "include", "libxml2")),
+    ...everyStage("CMAKE_PREFIX_PATH", o.libxml2),
     ...everyStage("LLVM_PARALLEL_LINK_JOBS", String(Math.max(1, Math.floor(o.jobs / 8)))),
 
-    // compiler-rt (builtins, sanitizers, profile) for both Linux architectures Bun's CI
-    // builds from one host, not just the native one. Upstream: native only. The cross
-    // one compiles against the image's <triple> cross gcc/libc (bun/Dockerfile).
-    BOOTSTRAP_BOOTSTRAP_LLVM_BUILTIN_TARGETS: `default;${o.crossTriple}`,
-    BOOTSTRAP_BOOTSTRAP_LLVM_RUNTIME_TARGETS: `default;${o.crossTriple}`,
-    [`BOOTSTRAP_BOOTSTRAP_BUILTINS_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
-    [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
-    [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`]: "compiler-rt",
+    // compiler-rt (builtins, sanitizers, profile) for the other Linux architecture too when the
+    // variant targets it (CI builds every lane from one host). Upstream: native only. It compiles
+    // against the image's <triple> cross gcc/libc (bun/Dockerfile).
+    ...(o.variant.target.os === "linux" && `linux-${o.variant.target.arch}` !== o.host
+      ? {
+          BOOTSTRAP_BOOTSTRAP_LLVM_BUILTIN_TARGETS: `default;${o.crossTriple}`,
+          BOOTSTRAP_BOOTSTRAP_LLVM_RUNTIME_TARGETS: `default;${o.crossTriple}`,
+          [`BOOTSTRAP_BOOTSTRAP_BUILTINS_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
+          [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
+          [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`]: "compiler-rt",
+        }
+      : {}),
 
     // deviation: clang, lld (every final-stage executable) allocate with mimalloc instead
     // of glibc malloc — the ThinLTO link runs LLVM's optimizer on every core at once.
@@ -117,14 +121,16 @@ export function releaseOverrides(o: Options): Record<string, string> {
     // (scripts/build/tools.ts; llvm-lib/llvm-rc/llvm-mt for the Windows target, dsymutil for
     // macOS). Listed in full: the outer ninja must have built them before the training
     // command starts its own nested build in the same tree.
-    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "lld;llvm-config;llvm-ar;llvm-ranlib;llvm-lib;llvm-nm;llvm-objcopy;llvm-objdump;llvm-strip;llvm-readelf;llvm-symbolizer;llvm-profdata;llvm-rc;llvm-mt;dsymutil",
+    // `runtimes` (compiler-rt): the training build may link a sanitizer or builtins from the
+    // instrumented clang's resource directory (debug and asan variants do).
+    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "lld;llvm-config;llvm-ar;llvm-ranlib;llvm-lib;llvm-nm;llvm-objcopy;llvm-objdump;llvm-strip;llvm-readelf;llvm-symbolizer;llvm-profdata;llvm-rc;llvm-mt;dsymutil;runtimes",
   };
 }
 
 export function buildLlvm(o: Options): void {
   const p = paths(o);
   const llvmRev = run(["git", "rev-parse", "HEAD"], { cwd: o.llvmProject, capture: true }).trim();
-  const key = `llvm-${RECIPE_VERSION}-${llvmRev}-bolt=${o.llvmBolt}-mimalloc=${o.mimalloc !== undefined}`;
+  const key = `llvm-${RECIPE_VERSION}-${llvmRev}-bolt=${o.llvmBolt}-mimalloc=${o.mimalloc !== undefined}-${o.variant.name}`;
   if (isDone(p.llvmInstall, key)) {
     console.log(`llvm: up to date (${key})`);
     return;

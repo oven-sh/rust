@@ -1,50 +1,35 @@
 #!/usr/bin/env node
-// The PGO/BOLT training workload: build Bun with the compiler being profiled.
+// The PGO/BOLT training workload: build Bun, in the one configuration this toolchain variant
+// is for (lib/variants.ts), with the compiler being profiled.
 //
 //   train.ts [rust]      from opt-dist (--training-command): rustc/cargo in OPT_DIST_*, plus
-//                        OPT_DIST_PROFILES (which rustc-perf profiles the step wants) and
+//                        OPT_DIST_PROFILES (which rustc-perf profile kinds the step wants) and
 //                        OPT_DIST_PHASE (pgo | bolt)
-//   train.ts clang       from LLVM's perf-training (bun/train-clang): the instrumented clang in CC
+//   train.ts clang       from lib/llvm.ts with the PGO-instrumented clang/lld in CC/CXX
 //   train.ts clang-bolt LLVM_DIR
 //                        from lib/llvm.ts with BOLT-instrumented clang/lld installed in LLVM_DIR
 //   train.ts preflight [RUST_DIR]   (a directory with bin/rustc and bin/cargo; default: rustup's)
-//                        from lib/rust.ts and lib/llvm.ts before the long builds: configure Bun for
-//                        the host and every cross target so environment problems surface in minutes
+//                        before the long builds: configure the variant's Bun build so environment
+//                        problems surface in minutes
 //
-// The rust modes compile Bun's C/C++ with the host LLVM; the clang modes compile Bun's Rust
-// with rustup's pinned nightly (same rustc commit as this branch, so the same bitcode reaches
-// lld). That is what lets the two halves build in parallel.
+// The rust mode compiles Bun's C/C++ with the host LLVM; the clang modes compile Bun's Rust with
+// rustup's pinned nightly (same rustc commit as this branch, so the same bitcode reaches lld).
+// That is what lets the two halves build in parallel.
 //
-// Everything else comes from BUN_TRAIN_CONFIG (lib/train-config.ts).
-//
-// What gets built, and why that set:
-//   rust   Opt → CI's release configuration with cross-language LTO (rustc emits bitcode) for
-//                  the host and for each target Bun's CI cross-builds from Linux, and without
-//                  LTO (rustc runs LLVM codegen itself, as the non-LTO CI lanes do) for the host;
-//                  Doc → a tiny crate, only so rustdoc's profile is not empty. Debug and Check
-//                  add nothing CI runs (front-end work is the same in a release build).
-//   clang  a full release build + LTO link for the host (clang, lld's LTO backend for both the
-//          C++ and the Rust bitcode), then C++-only compiles for the targets Bun's CI
-//          cross-builds from Linux: the other Linux arch, macOS arm64, Windows x64.
-//   BOLT phases (rust with OPT_DIST_PHASE=bolt, clang-bolt): the host release builds only —
-//          BOLT-instrumented binaries are several times slower, and code layout needs the
-//          hot paths, not coverage.
+// Every phase (rustc PGO, rustc's LLVM PGO, clang PGO, each BOLT pass) is the same thing: one
+// clean build of the variant's Bun configuration — `bun` (everything, through the link) for the
+// clang modes, `bun-rust` (the cargo half) for the rust mode. Everything else comes from
+// BUN_TRAIN_CONFIG (lib/train-config.ts).
 
 import { dirname, join } from "node:path";
-import { type BunBuild, type BunTarget, bunBuild, checkoutBun, type Toolchain } from "./lib/bun-build.ts";
+import { type BunBuild, bunBuild, checkoutBun, type Toolchain } from "./lib/bun-build.ts";
 import { exists, remove } from "./lib/fs.ts";
 import { run } from "./lib/run.ts";
 import { readTrainingEnv } from "./lib/train-config.ts";
 
 const config = readTrainingEnv();
+const v = config.variant;
 const b: BunBuild = { bunDir: config.bunDir, outDir: config.trainDir, jobs: config.jobs };
-const host: BunTarget = { os: "linux", arch: config.host === "linux-x64" ? "x64" : "aarch64" };
-const otherLinux: BunTarget = { os: "linux", arch: host.arch === "x64" ? "aarch64" : "x64" };
-const crossTargets: BunTarget[] = [otherLinux, { os: "darwin", arch: "aarch64" }, { os: "windows", arch: "x64" }];
-// The profile Bun's CI pipeline builds with (.buildkite/ci.mjs → getBuildArgs), minus the
-// Buildkite artifact uploads. --mode=cpp-only: its C/C++ half only (no cargo, no link).
-const release = ["--profile=ci-build", "--buildkite=off"];
-const cppOnly = [...release, "--mode=cpp-only"];
 
 if (config.bunRef !== undefined) checkoutBun(config.bunDir, config.bunRef);
 else if (!exists(join(config.bunDir, "scripts", "build.ts"))) throw new Error(`--bun-dir ${config.bunDir} is not a Bun checkout`);
@@ -55,18 +40,14 @@ switch (mode) {
     trainRust();
     break;
   case "clang":
-    trainClang({ llvm: dirname(dirname(requireEnv("CC"))) }, true);
+    build("clang", { llvm: dirname(dirname(requireEnv("CC"))) }, "bun");
     break;
   case "clang-bolt":
-    trainClang({ llvm: requireArg(3, "LLVM_DIR") }, false);
+    build("clang-bolt", { llvm: requireArg(3, "LLVM_DIR") }, "bun");
     break;
-  case "preflight": {
-    const toolchain = { llvm: config.hostLlvm, rust: process.argv[3] };
-    bunBuild(b, "preflight", host, ["--profile=debug"], toolchain, null);
-    for (const target of [host, ...crossTargets]) remove(bunBuild(b, `preflight-${target.os}-${target.arch}`, target, release, toolchain, null));
-    remove(join(config.trainDir, "preflight"));
+  case "preflight":
+    remove(bunBuild(b, `preflight-${v.name}`, v.target, v.args, { llvm: config.hostLlvm, rust: process.argv[3] }, null));
     break;
-  }
   default:
     throw new Error(`usage: train.ts rust|clang|clang-bolt LLVM_DIR|preflight [RUST_DIR] (got ${mode})`);
 }
@@ -75,17 +56,12 @@ function trainRust(): void {
   const rustc = requireEnv("OPT_DIST_RUSTC");
   const cargo = requireEnv("OPT_DIST_CARGO");
   const profiles = requireEnv("OPT_DIST_PROFILES").split(",");
-  const bolt = requireEnv("OPT_DIST_PHASE") === "bolt";
   const toolchain: Toolchain = { llvm: config.hostLlvm, rust: dirname(dirname(rustc)), cargo };
-
-  if (profiles.includes("Opt")) {
-    remove(bunBuild(b, "rust-release-lto", host, release, toolchain, "bun-rust"));
-    remove(bunBuild(b, "rust-release", host, [...release, "--lto=off"], toolchain, "bun-rust"));
-    for (const target of bolt ? [] : crossTargets) {
-      remove(bunBuild(b, `rust-release-lto-${target.os}-${target.arch}`, target, release, toolchain, "bun-rust"));
-    }
-  }
+  // opt-dist asks per rustc-perf profile kind (Debug/Opt/...); the variant is one workload, so
+  // build it once per phase, on whichever of those comes first.
+  if (profiles.includes("Opt") || profiles.includes("Debug")) build(`rust-${requireEnv("OPT_DIST_PHASE")}`, toolchain, "bun-rust");
   if (profiles.includes("Doc")) {
+    // Only so rustdoc's profile is not empty; nothing in Bun's build runs rustdoc.
     const crate = join(config.trainDir, "rustdoc-sample");
     remove(crate);
     run([cargo, "new", "--lib", "--vcs=none", crate], { capture: true });
@@ -93,23 +69,18 @@ function trainRust(): void {
   }
 }
 
-function trainClang(toolchain: Toolchain, cross: boolean): void {
-  remove(bunBuild(b, "clang-release-lto", host, release, toolchain, "bun"));
-  if (!cross) return;
-  for (const target of crossTargets) {
-    // cpp-only: every C/C++ translation unit for that target, archived; no cargo, no link.
-    remove(bunBuild(b, `clang-cpp-${target.os}-${target.arch}`, target, cppOnly, toolchain, "default"));
-  }
+function build(name: string, toolchain: Toolchain, ninjaTarget: string): void {
+  remove(bunBuild(b, `${name}-${v.name}`, v.target, v.args, toolchain, ninjaTarget));
 }
 
 function requireArg(index: number, name: string): string {
-  const v = process.argv[index];
-  if (v === undefined) throw new Error(`missing argument ${name}`);
-  return v;
+  const a = process.argv[index];
+  if (a === undefined) throw new Error(`missing argument ${name}`);
+  return a;
 }
 
 function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (v === undefined) throw new Error(`${name} is not set`);
-  return v;
+  const value = process.env[name];
+  if (value === undefined) throw new Error(`${name} is not set`);
+  return value;
 }

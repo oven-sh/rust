@@ -118,13 +118,16 @@ export function configureArgs(o: Options): string[] {
  * rustfmt, clippy, miri, llvm-tools, on top of rustc/cargo/std). build only.
  */
 export const SHIPPED_COMPONENTS = ["rustc", "rust-std", "cargo", "rust-src", "rustfmt", "clippy", "miri", "llvm-tools"];
+// BUN_TOOLCHAIN_DIST_ONLY=rustc,rust-std,rust-src: local experiments on hosts that cannot build
+// every tool (cargo's vendored OpenSSL wants a working perl, for one); never set in CI.
+const components = process.env.BUN_TOOLCHAIN_DIST_ONLY?.split(",") ?? SHIPPED_COMPONENTS;
 function distArgs(o: Options): string[] {
-  return ["--host", o.triple, "--target", o.triple, ...SHIPPED_COMPONENTS];
+  return ["--host", o.triple, "--target", o.triple, ...components];
 }
 
 export function buildRust(o: Options): void {
   const p = paths(o);
-  const key = `rust-${RECIPE_VERSION}-${run(["git", "rev-parse", "HEAD"], { cwd: o.checkout, capture: true }).trim()}-bolt=${o.rustBolt}`;
+  const key = `rust-${RECIPE_VERSION}-${run(["git", "rev-parse", "HEAD"], { cwd: o.checkout, capture: true }).trim()}-bolt=${o.rustBolt}-${o.variant.name}`;
   if (isDone(p.rustInstall, key)) {
     console.log(`rust: up to date (${key})`);
     return;
@@ -183,7 +186,7 @@ export function installDist(o: Options): void {
   remove(p.rustInstall);
   mkdir(p.rustInstall);
   const tarballs = readdirSync(dist).filter(f => f.endsWith(".tar.xz"));
-  for (const component of SHIPPED_COMPONENTS) {
+  for (const component of components) {
     // rust-src-nightly.tar.xz; everything else is <component>-nightly-<triple>.tar.xz
     const tarball = tarballs.find(f => f === `${component}-nightly${component === "rust-src" ? "" : `-${o.triple}`}.tar.xz`);
     if (tarball === undefined) throw new Error(`x.py dist did not produce a ${component} tarball in ${dist}`);

@@ -1,6 +1,7 @@
 // Command line and fixed inputs of the toolchain build.
 
 import { availableParallelism } from "node:os";
+import { findVariant, type Variant } from "./variants.ts";
 import { join, resolve } from "node:path";
 
 /** Bump when the recipe changes in a way that must not reuse earlier stage outputs. */
@@ -32,10 +33,14 @@ export interface Options {
   hostLlvm: string;
   /** mimalloc override object linked into clang and lld; undefined = keep the libc allocator. */
   mimalloc: string | undefined;
+  /** Prefix of a static libxml2 (lib/libxml2.a, include/libxml2) for lld and llvm-mt. */
+  libxml2: string;
   /** oven-sh/bun ref to train on, or an existing checkout to use as-is. */
   bunRef: string;
   bunDir: string | undefined;
   jobs: number;
+  /** The Bun build the profiles come from (lib/variants.ts): a ci-<lane> or dev. */
+  variant: Variant;
   /** BOLT clang and lld (lib/llvm.ts). */
   llvmBolt: boolean;
   /**
@@ -52,7 +57,7 @@ export function parseOptions(argv: string[]): Options {
   const args = new Map<string, string>();
   const positional: string[] = [];
   for (const arg of argv) {
-    const m = /^--([a-z-]+)(?:=(.*))?$/.exec(arg);
+    const m = /^--([a-z0-9-]+)(?:=(.*))?$/.exec(arg);
     if (m) args.set(m[1]!, m[2] ?? "true");
     else positional.push(arg);
   }
@@ -85,9 +90,11 @@ export function parseOptions(argv: string[]): Options {
     crossTriple,
     hostLlvm: resolve(take("host-llvm") ?? "/opt/llvm"),
     mimalloc: (v => (v === "none" ? undefined : resolve(v)))(take("mimalloc") ?? "/opt/mimalloc/mimalloc.o"),
+    libxml2: resolve(take("libxml2") ?? "/opt/libxml2"),
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),
     jobs: Number(take("jobs") ?? availableParallelism()),
+    variant: findVariant(host, take("variant") ?? "dev"),
     llvmBolt: take("skip-bolt") === undefined,
     rustBolt: false,
   };
@@ -115,10 +122,12 @@ options:
   --build-dir=DIR      output root (default: obj/bun-toolchain)
   --host-llvm=DIR      existing LLVM used to compile everything (default: /opt/llvm)
   --mimalloc=FILE|none mimalloc.o to link into clang/lld (default: /opt/mimalloc/mimalloc.o)
+  --libxml2=DIR        static libxml2 prefix for lld/llvm-mt (default: /opt/libxml2)
   --llvm-project=DIR   llvm sources (default: src/llvm-project)
   --bun-ref=SHA        oven-sh/bun commit to train on (default: pinned)
   --bun-dir=DIR        use this Bun checkout instead of cloning --bun-ref
   --jobs=N             parallelism (default: all cores)
+  --variant=NAME       which Bun build to train on: ci-<os>-<arch>[-<abi>|-asan] or dev (default: dev)
   --skip-bolt          PGO only
   --aarch64-rust-bolt  also BOLT rustc's libraries on aarch64 (experimental; hangs in llvm-bolt 21)`);
   process.exit(2);

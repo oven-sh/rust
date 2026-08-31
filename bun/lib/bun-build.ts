@@ -4,11 +4,9 @@
 import { join } from "node:path";
 import { exists, mkdir, read, remove, write } from "./fs.ts";
 import { run } from "./run.ts";
+import type { BunTarget } from "./variants.ts";
 
-export interface BunTarget {
-  os: "linux" | "darwin" | "windows";
-  arch: "x64" | "aarch64";
-}
+export type { BunTarget };
 
 export interface BunBuild {
   /** Bun checkout */
@@ -50,7 +48,7 @@ export function bunBuild(b: BunBuild, name: string, target: BunTarget, args: str
   // One download cache (WebKit prebuilt, SDKs, sysroots) for all build directories; a ci
   // profile would otherwise keep a private one per build directory.
   run(
-    [process.execPath, join(b.bunDir, "scripts", "build.ts"), ...args, `--os=${target.os}`, `--arch=${target.arch}`, `--buildDir=${dir}`, `--cacheDir=${join(b.outDir, "cache")}`, "--configure-only"],
+    [process.execPath, join(b.bunDir, "scripts", "build.ts"), ...args, `--os=${target.os}`, `--arch=${target.arch}`, ...(target.os === "linux" ? [`--abi=${target.abi ?? "gnu"}`] : []), `--buildDir=${dir}`, `--cacheDir=${join(b.outDir, "cache")}`, "--configure-only"],
     { cwd: b.bunDir, env },
   );
   if (ninjaTarget !== null) ninja(b, dir, ninjaTarget);

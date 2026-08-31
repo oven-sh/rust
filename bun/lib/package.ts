@@ -13,6 +13,7 @@ import { releaseOverrides } from "./llvm.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { configureArgs, SHIPPED_COMPONENTS } from "./rust.ts";
 import { run } from "./run.ts";
+import { builtBinary } from "./variants.ts";
 
 /** Rust's license texts, from this checkout; LLVM's arrive in llvm-install/licenses (lib/llvm.ts). */
 const RUST_LICENSES: Record<string, string> = {
@@ -27,7 +28,7 @@ const GCC_LICENSE_DIR = "/opt/gcc/share/licenses";
 
 export function packageToolchain(o: Options): string {
   const p = paths(o);
-  const name = `bun-toolchain-${o.host}`;
+  const name = `bun-toolchain-${o.host}-${o.variant.name}`;
   const root = join(p.out, name);
   remove(p.out);
   mkdir(root);
@@ -52,6 +53,7 @@ export function packageToolchain(o: Options): string {
         host: o.host,
         rust: { commit: rev(o.checkout), configure: configureArgs(o), dist: SHIPPED_COMPONENTS },
         llvm: { commit: read(join(p.llvmInstall, "llvm-project.rev")).trim(), cmake: releaseOverrides(o) },
+        variant: o.variant,
         trainedOn: { bun: o.bunDir === undefined ? o.bunRef : rev(p.bun) },
         bolt: { llvm: o.llvmBolt, rust: o.rustBolt },
         mimalloc: o.mimalloc !== undefined,
@@ -76,10 +78,11 @@ function smoke(o: Options, root: string): void {
   const p = paths(o);
   if (o.bunDir === undefined) checkoutBun(p.bun, o.bunRef);
   const b: BunBuild = { bunDir: p.bun, outDir: p.train, jobs: o.jobs };
-  const arch = o.host === "linux-x64" ? "x64" : "aarch64";
-  const dir = bunBuild(b, "smoke", { os: "linux", arch }, ["--profile=ci-build", "--buildkite=off"], { llvm: root, rust: root }, "bun");
-  const version = run([join(dir, "bun"), "--version"], { capture: true }).trim();
-  console.log(`smoke: built bun ${version} with ${root}`);
+  const dir = bunBuild(b, "smoke", o.variant.target, o.variant.args, { llvm: root, rust: root }, "bun");
+  // Run it when it is a binary this host executes; a cross variant's proof is that it linked.
+  const native = o.variant.target.os === "linux" && `linux-${o.variant.target.arch}` === o.host && o.variant.target.abi !== "android";
+  const version = native ? run([join(dir, builtBinary(o.variant)), "--version"], { capture: true }).trim() : "(cross target, not run)";
+  console.log(`smoke: built ${builtBinary(o.variant)} ${version} for ${o.variant.name} with ${root}`);
 }
 
 const rev = (repo: string) => run(["git", "rev-parse", "HEAD"], { cwd: repo, capture: true, quiet: true }).trim();

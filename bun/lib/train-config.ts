@@ -2,6 +2,7 @@
 // CMake, not of toolchain.ts, so its inputs travel as environment variables.
 
 import { type Options, paths } from "./options.ts";
+import type { Variant } from "./variants.ts";
 
 export interface TrainConfig {
   /** Bun checkout to build. */
@@ -13,6 +14,7 @@ export interface TrainConfig {
   /** LLVM providing clang for the rust phase's C/C++ (Bun's build always configures a C toolchain). */
   hostLlvm: string;
   host: Options["host"];
+  variant: Variant;
   jobs: number;
 }
 
@@ -24,6 +26,7 @@ export function trainingEnv(o: Options): Record<string, string> {
     trainDir: p.train,
     hostLlvm: o.hostLlvm,
     host: o.host,
+    variant: o.variant,
     jobs: o.jobs,
   };
   return { BUN_TRAIN_CONFIG: JSON.stringify(config) };
