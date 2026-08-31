@@ -20,11 +20,11 @@
 //   clang/utils/perf-training/                (profile collection, BOLT post-link step)
 //   .github/workflows/release-binaries.yml    (how it is invoked)
 
-import { chmodSync, copyFileSync, cpSync, readdirSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
-import { run } from "./run.ts";
+import { run, runConcurrently } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
 
 /**
@@ -89,9 +89,31 @@ function llvmRev(o: Options): string {
   return run(["git", "rev-parse", "HEAD"], { cwd: o.llvmProject, capture: true }).trim();
 }
 
-/** C/C++ flags added to the instrumented and final stages (see NO_JUMP_TABLES); "" = none. */
-function stageCFlags(o: Options): string {
-  return o.host === "linux-aarch64" && o.llvmBolt ? NO_JUMP_TABLES : "";
+/**
+ * C/C++ flags for the stages stage 1's clang compiles (instrumented and final):
+ * - NO_JUMP_TABLES where BOLT needs it (see there);
+ * - the GCC installation the host clang uses (bun/Dockerfile writes it into its clang.cfg: the
+ *   image's GCC 13, built the way BOLT wants), so the libstdc++ that gets statically linked into
+ *   clang and lld is that one rather than whatever the distro's default GCC is;
+ * - on the instrumented stage only, more value-profile counters per site: with one Bun build as
+ *   the training set the default (1 per site) runs out on the lanes where clang does codegen
+ *   ("Unable to track new values"), dropping indirect-call profiles. rust's bootstrap uses 4 for
+ *   rustc, ClangBuiltLinux 6, Fedora 8.
+ */
+function stageCFlags(o: Options, stage: "instrumented" | "final"): string {
+  const flags: string[] = [];
+  if (o.host === "linux-aarch64" && o.llvmBolt) flags.push(NO_JUMP_TABLES);
+  const gcc = hostGccInstallDir(o);
+  if (gcc !== undefined) flags.push(`--gcc-install-dir=${gcc}`);
+  if (stage === "instrumented") flags.push("-Xclang -mllvm -Xclang -vp-counters-per-site=8");
+  return flags.join(" ");
+}
+
+/** The `--gcc-install-dir=` the host clang is configured with (bun/Dockerfile), if any. */
+function hostGccInstallDir(o: Options): string | undefined {
+  const cfg = join(o.hostLlvm, "bin", "clang++.cfg");
+  if (!exists(cfg)) return undefined;
+  return readFileSync(cfg, "utf8").match(/--gcc-install-dir=(\S+)/)?.[1];
 }
 
 /** Cache settings every stage gets. */
@@ -132,10 +154,8 @@ function instrumentedCache(o: Options): Record<string, string> {
     cache[name] = value;
     cache[`BOOTSTRAP_${name}`] = value;
   }
-  if (stageCFlags(o)) {
-    cache.BOOTSTRAP_CMAKE_C_FLAGS = stageCFlags(o);
-    cache.BOOTSTRAP_CMAKE_CXX_FLAGS = stageCFlags(o);
-  }
+  cache.BOOTSTRAP_CMAKE_C_FLAGS = stageCFlags(o, "instrumented");
+  cache.BOOTSTRAP_CMAKE_CXX_FLAGS = stageCFlags(o, "instrumented");
   // The instrumented clang serves every variant on this host, including ones that link a
   // sanitizer runtime for the other Linux architecture (ci-linux-x64-asan on the aarch64 host),
   // so its compiler-rt is built for both — as the final stage's is when the variant needs it.
@@ -194,7 +214,17 @@ function finalStageCache(o: Options): Record<string, string> {
     // deviation: clang, lld (every final-stage executable) allocate with mimalloc instead of
     // glibc malloc — the ThinLTO link runs LLVM's optimizer on every core at once. -pthread:
     // mimalloc uses pthread_key_*, which glibc < 2.34 keeps in libpthread.
-    CMAKE_EXE_LINKER_FLAGS: o.mimalloc !== undefined ? `${releaseLinkerFlags} -pthread ${o.mimalloc}` : releaseLinkerFlags,
+    // deviation: identical code folding at link time (Android's clang: --icf=safe; rustc:
+    // --icf=all) — less text for the same code. -fuse-ld=lld spelled out because CMake's compiler
+    // check links with these flags before LLVM_ENABLE_LLD applies, and --icf is lld's.
+    CMAKE_EXE_LINKER_FLAGS: [releaseLinkerFlags, "-fuse-ld=lld -Wl,--icf=safe", ...(o.mimalloc !== undefined ? ["-pthread", o.mimalloc] : [])].join(" "),
+    // deviation: libstdc++ linked into the executables (Chromium's and Android's clang builds do
+    // the same; rustc does for libLLVM): its code becomes part of what LTO optimizes and BOLT lays
+    // out, and the toolchain no longer needs a particular libstdc++.so.6 on the host.
+    LLVM_STATIC_LINK_CXX_STDLIB: "ON",
+    // deviation: no .eh_frame unwind tables (Chromium's clang build): clang and lld are built
+    // without exceptions; smaller binaries, less for BOLT to keep consistent.
+    LLVM_ENABLE_UNWIND_TABLES: "OFF",
     // l.194-195 set_final_stage_var
     LLVM_ENABLE_PROJECTS: "clang;lld",
     LLVM_ENABLE_RUNTIMES: "compiler-rt",
@@ -215,10 +245,8 @@ function finalStageCache(o: Options): Record<string, string> {
     CLANG_PLUGIN_SUPPORT: "OFF",
     LLVM_ENABLE_PLUGINS: "OFF",
   };
-  if (stageCFlags(o)) {
-    cache.CMAKE_C_FLAGS = stageCFlags(o);
-    cache.CMAKE_CXX_FLAGS = stageCFlags(o);
-  }
+  cache.CMAKE_C_FLAGS = stageCFlags(o, "final");
+  cache.CMAKE_CXX_FLAGS = stageCFlags(o, "final");
   // The shipped compiler-rt covers the other Linux architecture only when the variant targets it.
   if (crossLinux) Object.assign(cache, crossCompilerRt(o));
   return cache;
@@ -232,7 +260,7 @@ function cmakeConfigure(source: string, buildDir: string, cache: Record<string, 
 export function buildInstrumented(o: Options): void {
   const p = paths(o);
   const l = layout(o);
-  const key = `llvm-instrumented-${RECIPE_VERSION}-${llvmRev(o)}${stageCFlags(o)}-crossrt`;
+  const key = `llvm-instrumented-${RECIPE_VERSION}-${llvmRev(o)}-${stageCFlags(o, "instrumented")}-crossrt`;
   if (exists(l.instrumentedStamp) && isDone(p.llvmBuild, key)) {
     console.log(`llvm instrumented stage: up to date (${key})`);
   } else {
@@ -258,7 +286,7 @@ export function buildInstrumented(o: Options): void {
 }
 
 /** The variant's clang/lld: train, build the final stage with the profile, install, BOLT. */
-export function buildFinal(o: Options): void {
+export async function buildFinal(o: Options): Promise<void> {
   const p = paths(o);
   const l = layout(o);
   if (!exists(l.instrumentedStamp)) {
@@ -301,7 +329,7 @@ export function buildFinal(o: Options): void {
   run(["ninja", "-C", l.finalBuild, `-j${o.jobs}`, "install-distribution"], { env: { NINJA_STATUS: "[%f/%t %es] " } });
 
   // 3. BOLT, licenses, provenance.
-  if (o.llvmBolt) boltWithBun(o);
+  if (o.llvmBolt) await boltWithBun(o);
   for (const [name, src] of Object.entries(LLVM_LICENSES)) cpSync(join(o.llvmProject, src), join(p.llvmInstall, "licenses", name));
   const mimallocLicense = o.mimalloc && join(o.mimalloc, "..", "LICENSE"); // where bun/Dockerfile puts it
   if (mimallocLicense && exists(mimallocLicense)) cpSync(mimallocLicense, join(p.llvmInstall, "licenses", "mimalloc-LICENSE"));
@@ -322,12 +350,18 @@ function boltTargets(installBin: string): string[] {
 }
 
 /**
- * BOLT clang and lld in the install tree: instrument both in place, build the variant's Bun
- * with them (bun/train.ts clang-bolt), then optimize the originals with the collected profile.
- * llvm-bolt / merge-fdata are the host LLVM's, as on the rust side. Flags:
- * clang/utils/perf-training/perf-helper.py bolt_optimize().
+ * BOLT clang and lld in the install tree: instrument both, build the variant's Bun with them
+ * (bun/train.ts clang-bolt), then optimize the originals with the collected profile. llvm-bolt /
+ * merge-fdata are the host LLVM's, as on the rust side. The two binaries are processed
+ * concurrently (each llvm-bolt run is minutes on a binary this size).
+ *
+ * Optimization flags: rust's src/tools/opt-dist set (a superset of clang/utils/perf-training's:
+ * adds -jump-tables=move, -icf=all, and three-way -split-strategy=cdsplit on x86_64 — profile2 on
+ * aarch64 where cdsplit is broken), plus perf-training's -split-eh and -use-gnu-stack. (Not
+ * -hugify: on kernels >= 5.10 its runtime only madvise()s the file-backed text, which for a
+ * process that lives seconds never becomes huge pages — measured: THPeligible 0.)
  */
-function boltWithBun(o: Options): void {
+async function boltWithBun(o: Options): Promise<void> {
   const p = paths(o);
   const l = layout(o);
   const bin = join(p.llvmInstall, "bin");
@@ -337,10 +371,10 @@ function boltWithBun(o: Options): void {
   mkdir(l.boltWork);
 
   const targets = boltTargets(bin);
-  for (const name of targets) {
-    copyFileSync(join(bin, name), join(l.boltWork, `${name}.prebolt`));
-    run([llvmBolt, join(l.boltWork, `${name}.prebolt`), "-o", join(bin, name), "-instrument", "--instrumentation-file-append-pid", `--instrumentation-file=${join(l.boltWork, name)}.fdata`]);
-  }
+  for (const name of targets) copyFileSync(join(bin, name), join(l.boltWork, `${name}.prebolt`));
+  await runConcurrently(
+    targets.map(name => [llvmBolt, join(l.boltWork, `${name}.prebolt`), "-o", join(bin, name), "-instrument", "--instrumentation-file-append-pid", `--instrumentation-file=${join(l.boltWork, name)}.fdata`]),
+  );
 
   // LLD_IN_TEST=1 as during PGO training: lld must return from main for BOLT's runtime to
   // write its profile at exit.
@@ -350,9 +384,13 @@ function boltWithBun(o: Options): void {
     const profiles = readdirSync(l.boltWork).filter(f => f.startsWith(`${name}.fdata`)).map(f => join(l.boltWork, f));
     if (profiles.length === 0) throw new Error(`BOLT: no profile was written for ${name}`);
     run([mergeFdata, ...profiles, "-o", join(l.boltWork, `${name}.merged.fdata`)], { capture: true });
-    run([
-      llvmBolt, join(l.boltWork, `${name}.prebolt`), "-o", join(bin, name), "-data", join(l.boltWork, `${name}.merged.fdata`),
-      "-reorder-blocks=ext-tsp", "-reorder-functions=cdsort", "-split-functions", "-split-all-cold", "-split-eh", "-dyno-stats", "-use-gnu-stack", "-update-debug-sections",
-    ]);
   }
+  const splitStrategy = o.host === "linux-aarch64" ? "profile2" : "cdsplit";
+  await runConcurrently(
+    targets.map(name => [
+      llvmBolt, join(l.boltWork, `${name}.prebolt`), "-o", join(bin, name), "-data", join(l.boltWork, `${name}.merged.fdata`),
+      "-reorder-blocks=ext-tsp", "-reorder-functions=cdsort", "-split-functions", `-split-strategy=${splitStrategy}`, "-split-all-cold", "-split-eh",
+      "-jump-tables=move", "-icf=all", "-use-gnu-stack", "-update-debug-sections", "-dyno-stats",
+    ]),
+  );
 }

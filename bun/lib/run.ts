@@ -2,7 +2,7 @@
 // `run`, which prints the command line, streams its output, times it, and throws
 // on a non-zero exit.
 
-import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncOptions } from "node:child_process";
 
 export interface RunOptions {
   cwd?: string;
@@ -34,6 +34,27 @@ export function run(argv: string[], opts: RunOptions = {}): string {
   }
   if (!opts.quiet && Number(seconds) >= 5) console.log(`  (${seconds}s)`);
   return typeof result.stdout === "string" ? result.stdout : "";
+}
+
+/** Run several commands at once (output interleaved), wait for all, throw if any failed. */
+export async function runConcurrently(argvs: string[][]): Promise<void> {
+  const results = await Promise.all(
+    argvs.map(
+      argv =>
+        new Promise<string | undefined>(resolve => {
+          console.log(`\n$ ${argv.map(shellQuote).join(" ")} &`);
+          const started = Date.now();
+          const child = spawn(argv[0]!, argv.slice(1), { stdio: "inherit" });
+          child.on("error", e => resolve(`${argv[0]}: ${e.message}`));
+          child.on("exit", (code, signal) => {
+            console.log(`  (${argv[0]} ${argv[1] ?? ""}: ${((Date.now() - started) / 1000).toFixed(0)}s)`);
+            resolve(code === 0 ? undefined : `${argv[0]} exited with ${code ?? `signal ${signal}`}`);
+          });
+        }),
+    ),
+  );
+  const failed = results.filter(r => r !== undefined);
+  if (failed.length > 0) throw new Error(failed.join("; "));
 }
 
 function shellQuote(s: string): string {

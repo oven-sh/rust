@@ -31,21 +31,21 @@ if (options.command === "matrix") {
 mkdir(options.buildDir);
 probe(options);
 
-const steps: Record<Command, () => void> = {
+const steps: Record<Command, () => void | Promise<void>> = {
   probe: () => {},
   "llvm-instrumented": () => buildLlvmInstrumented(options),
   llvm: () => buildLlvm(options),
   rust: () => buildRust(options),
-  package: () => packageToolchain(options),
+  package: () => { packageToolchain(options); },
   matrix: () => {},
-  all: () => {
+  all: async () => {
     buildLlvmInstrumented(options);
-    buildLlvm(options);
+    await buildLlvm(options);
     buildRust(options);
     packageToolchain(options);
   },
 };
-steps[options.command]();
+await steps[options.command]();
 
 function probe(o: Options): void {
   const gib = (n: number) => `${(n / 2 ** 30).toFixed(0)} GiB`;
