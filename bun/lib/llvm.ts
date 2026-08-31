@@ -136,7 +136,31 @@ function instrumentedCache(o: Options): Record<string, string> {
     cache.BOOTSTRAP_CMAKE_C_FLAGS = stageCFlags(o);
     cache.BOOTSTRAP_CMAKE_CXX_FLAGS = stageCFlags(o);
   }
+  // The instrumented clang serves every variant on this host, including ones that link a
+  // sanitizer runtime for the other Linux architecture (ci-linux-x64-asan on the aarch64 host),
+  // so its compiler-rt is built for both — as the final stage's is when the variant needs it.
+  Object.assign(cache, prefixed("BOOTSTRAP_", crossCompilerRt(o)));
   return cache;
+}
+
+/**
+ * compiler-rt (builtins, sanitizers, profile) for the other Linux architecture as well as the
+ * native one. Upstream: native only. It compiles against the image's <triple> cross gcc/libc
+ * (bun/Dockerfile); Bun's CI gives its host clang the same by other means (bootstrap.sh
+ * install_cross_compiler_rt).
+ */
+function crossCompilerRt(o: Options): Record<string, string> {
+  return {
+    LLVM_BUILTIN_TARGETS: `default;${o.crossTriple}`,
+    LLVM_RUNTIME_TARGETS: `default;${o.crossTriple}`,
+    [`BUILTINS_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
+    [`RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
+    [`RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`]: "compiler-rt",
+  };
+}
+
+function prefixed(prefix: string, cache: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(cache).map(([k, v]) => [prefix + k, v]));
 }
 
 /**
@@ -195,16 +219,8 @@ function finalStageCache(o: Options): Record<string, string> {
     cache.CMAKE_C_FLAGS = stageCFlags(o);
     cache.CMAKE_CXX_FLAGS = stageCFlags(o);
   }
-  if (crossLinux) {
-    // compiler-rt (builtins, sanitizers, profile) for the other Linux architecture too when the
-    // variant targets it (CI builds every lane from one host). Upstream: native only. It
-    // compiles against the image's <triple> cross gcc/libc (bun/Dockerfile).
-    cache.LLVM_BUILTIN_TARGETS = `default;${o.crossTriple}`;
-    cache.LLVM_RUNTIME_TARGETS = `default;${o.crossTriple}`;
-    cache[`BUILTINS_${o.crossTriple}_CMAKE_SYSTEM_NAME`] = "Linux";
-    cache[`RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`] = "Linux";
-    cache[`RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`] = "compiler-rt";
-  }
+  // The shipped compiler-rt covers the other Linux architecture only when the variant targets it.
+  if (crossLinux) Object.assign(cache, crossCompilerRt(o));
   return cache;
 }
 
@@ -216,7 +232,7 @@ function cmakeConfigure(source: string, buildDir: string, cache: Record<string, 
 export function buildInstrumented(o: Options): void {
   const p = paths(o);
   const l = layout(o);
-  const key = `llvm-instrumented-${RECIPE_VERSION}-${llvmRev(o)}${stageCFlags(o)}`;
+  const key = `llvm-instrumented-${RECIPE_VERSION}-${llvmRev(o)}${stageCFlags(o)}-crossrt`;
   if (exists(l.instrumentedStamp) && isDone(p.llvmBuild, key)) {
     console.log(`llvm instrumented stage: up to date (${key})`);
   } else {
