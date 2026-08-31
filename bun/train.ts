@@ -17,8 +17,9 @@
 // That is what lets the two halves build in parallel.
 //
 // Every phase (rustc PGO, rustc's LLVM PGO, clang PGO, each BOLT pass) is the same thing: one
-// clean build of the variant's Bun configuration — `bun` (everything, through the link) for the
-// clang modes, `bun-rust` (the cargo half) for the rust mode. Everything else comes from
+// clean build of the variant's Bun configuration — ninja's default targets (what `bun run build`
+// and CI build: the executable, through the link) for the clang modes, `bun-rust` (the cargo
+// half) for the rust mode. Everything else comes from
 // BUN_TRAIN_CONFIG (lib/train-config.ts).
 
 import { dirname, join } from "node:path";
@@ -40,10 +41,10 @@ switch (mode) {
     trainRust();
     break;
   case "clang":
-    build("clang", { llvm: dirname(dirname(requireEnv("CC"))) }, "bun");
+    build("clang", { llvm: dirname(dirname(requireEnv("CC"))) }, "default");
     break;
   case "clang-bolt":
-    build("clang-bolt", { llvm: requireArg(3, "LLVM_DIR") }, "bun");
+    build("clang-bolt", { llvm: requireArg(3, "LLVM_DIR") }, "default");
     break;
   case "preflight":
     remove(bunBuild(b, `preflight-${v.name}`, v.target, v.args, { llvm: config.hostLlvm, rust: process.argv[3] }, null));
