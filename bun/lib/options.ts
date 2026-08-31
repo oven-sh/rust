@@ -17,8 +17,20 @@ export const DEFAULT_BUN_REF = "ed950b88ab2ec6b58bccdfe7d310731b8ca13c4d";
 
 export type Host = "linux-x64" | "linux-aarch64";
 
+/** toolchain.ts sub-commands, in pipeline order. */
+export const COMMANDS = {
+  "llvm-instrumented": "clang + lld: stage 1 and the PGO-instrumented stage of LLVM's release recipe (once per host)",
+  llvm: "clang + lld for --variant: train on its Bun build, final PGO stage, BOLT",
+  rust: "rustc + cargo for --variant: rust-lang's dist recipe (PGO rustc, PGO+BOLT libLLVM) trained on its Bun build",
+  package: "bun-toolchain-<host>-<variant>-{llvm,rust}.tar.zst from the two installs",
+  all: "every step above, in order (default)",
+  probe: "print what this machine has (cores, memory, disk, host tools)",
+  matrix: "print the {host, variant} build matrix as JSON (for the workflow); --variants=a,b filters",
+} as const;
+export type Command = keyof typeof COMMANDS;
+
 export interface Options {
-  command: "rust" | "llvm" | "package" | "all" | "probe";
+  command: Command;
   /** oven-sh/rust checkout (this repository). */
   checkout: string;
   /** oven-sh/llvm-project checkout; defaults to the src/llvm-project submodule. */
@@ -41,6 +53,8 @@ export interface Options {
   jobs: number;
   /** The Bun build the profiles come from (lib/variants.ts): a ci-<lane> or dev. */
   variant: Variant;
+  /** `matrix` only: restrict the printed matrix to these variant names. */
+  variantFilter: string[] | undefined;
   /** BOLT clang and lld (lib/llvm.ts). */
   llvmBolt: boolean;
   /**
@@ -67,10 +81,8 @@ export function parseOptions(argv: string[]): Options {
     return v;
   };
 
-  const command = (positional[0] ?? "all") as Options["command"];
-  if (!["rust", "llvm", "package", "all", "probe"].includes(command) || positional.length > 1) {
-    usage();
-  }
+  const command = (positional[0] ?? "all") as Command;
+  if (!(command in COMMANDS) || positional.length > 1) usage();
 
   const arch = process.arch === "arm64" ? "aarch64" : process.arch === "x64" ? "x64" : undefined;
   if (process.platform !== "linux" || arch === undefined) {
@@ -93,6 +105,7 @@ export function parseOptions(argv: string[]): Options {
     libxml2: resolve(take("libxml2") ?? "/opt/libxml2"),
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),
+    variantFilter: take("variants")?.split(","),
     jobs: Number(take("jobs") ?? availableParallelism()),
     variant: findVariant(host, take("variant") ?? "dev"),
     llvmBolt: take("skip-bolt") === undefined,
@@ -110,13 +123,10 @@ export function parseOptions(argv: string[]): Options {
 }
 
 function usage(): never {
-  console.error(`usage: node bun/toolchain.ts [rust|llvm|package|all|probe] [options]
+  const width = Math.max(...Object.keys(COMMANDS).map(c => c.length));
+  console.error(`usage: node bun/toolchain.ts [${Object.keys(COMMANDS).join("|")}] [options]
 
-  rust      build rustc + cargo the way rust-lang's dist builders do, PGO/BOLT-trained on Bun
-  llvm      build clang + lld the way LLVM's release builds do, PGO/BOLT-trained on Bun
-  package   assemble both into bun-toolchain-<host>.tar.zst
-  all       rust, llvm, package (default)
-  probe     print what this machine has (cores, memory, disk, host tools)
+${Object.entries(COMMANDS).map(([c, d]) => `  ${c.padEnd(width)}  ${d}`).join("\n")}
 
 options:
   --build-dir=DIR      output root (default: obj/bun-toolchain)
@@ -128,6 +138,7 @@ options:
   --bun-dir=DIR        use this Bun checkout instead of cloning --bun-ref
   --jobs=N             parallelism (default: all cores)
   --variant=NAME       which Bun build to train on: ci-<os>-<arch>[-<abi>|-asan] or dev (default: dev)
+  --variants=A,B       (matrix) only these variants
   --skip-bolt          PGO only
   --aarch64-rust-bolt  also BOLT rustc's libraries on aarch64 (experimental; hangs in llvm-bolt 21)`);
   process.exit(2);
@@ -145,9 +156,16 @@ export function paths(o: Options) {
     rustDist: join(b, "rust", "build", "dist"),
     /** the `x.py dist` tarballs installed with their install.sh: the finished Rust half (what package ships) */
     rustInstall: join(b, "rust-install"),
-    /** cmake binary dir of the Release.cmake multi-stage build */
+    /**
+     * Release.cmake's build dir: stage 1 at the top, the PGO-instrumented stage under
+     * tools/clang/stage2-instrumented-bins. Variant-independent; `llvm-instrumented` makes it
+     * and packs the parts later steps need into llvmInstrumentedTar.
+     */
     llvmBuild: join(b, "llvm"),
-    /** `install` of the final LLVM stage */
+    llvmInstrumentedTar: join(b, `llvm-instrumented-${o.host}.tar.zst`),
+    /** the variant's profiles and its final (PGO) stage build dir */
+    llvmFinal: join(b, "llvm-final"),
+    /** `install-distribution` of the final stage, then BOLTed: the finished LLVM half */
     llvmInstall: join(b, "llvm-install"),
     /** Bun checkout and build dirs used for training */
     bun: o.bunDir !== undefined ? resolve(o.bunDir) : join(b, "bun"),

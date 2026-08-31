@@ -1,19 +1,24 @@
-// clang + lld, built the way LLVM's release binaries are built —
-// clang/cmake/caches/Release.cmake: stage1 → stage2-instrumented (IR PGO) →
-// stage2 (profile-use + ThinLTO) — with these inputs of ours:
-//   - the PGO training workload is a Bun build (CLANG_PGO_TRAINING_DATA_SOURCE_DIR
-//     → bun/train-clang → bun/train.ts clang);
-//   - BOLT: Release.cmake would BOLT `clang` with clang/utils/perf-training's small
-//     built-in lit suite. We turn that off and, after install, BOLT both `clang` and
-//     `lld` with a Bun build as the workload (host llvm-bolt; same flags as
-//     clang/utils/perf-training/perf-helper.py bolt-optimize). lld matters to us
-//     because Bun's cross-language ThinLTO link runs LLVM's backend inside lld.
+// clang + lld, built the way LLVM's release binaries are built — clang/cmake/caches/Release.cmake:
+// stage 1 (host compiler builds clang) → PGO-instrumented stage → final stage (profile use +
+// ThinLTO) — with these inputs of ours:
+//   - the PGO/BOLT training workload is one Bun build, the toolchain variant's (lib/variants.ts);
+//   - BOLT: Release.cmake would BOLT `clang` with clang/utils/perf-training's small built-in
+//     suite. We turn that off and, after install, BOLT both `clang` and `lld` with the variant's
+//     Bun build (lld matters: Bun's cross-language ThinLTO link runs LLVM's backend inside lld);
 //   - only the pieces Bun uses are built and installed (LLVM_DISTRIBUTION_COMPONENTS).
 //
+// It runs as two steps so the expensive, variant-independent part is shared:
+//   buildInstrumented   stage 1 + the instrumented stage, via Release.cmake (ninja target
+//                       `stage2-instrumented`). Packs what the next step needs into a tarball.
+//   buildFinal          per variant: train with the instrumented clang/lld, merge the profile,
+//                       configure and build the final stage exactly as Release.cmake's bootstrap
+//                       would (finalStageCache below), install-distribution, BOLT.
+//
 // Upstream recipe, at src/llvm-project's pinned commit:
-//   clang/cmake/caches/Release.cmake
-//   clang/utils/perf-training/          (profile collection, BOLT post-link step)
-//   .github/workflows/release-binaries.yml (how it is invoked)
+//   clang/cmake/caches/Release.cmake          (the cache file; line references below are to it)
+//   clang/CMakeLists.txt "if (CLANG_ENABLE_BOOTSTRAP)"  (how a stage configures the next)
+//   clang/utils/perf-training/                (profile collection, BOLT post-link step)
+//   .github/workflows/release-binaries.yml    (how it is invoked)
 
 import { chmodSync, copyFileSync, cpSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -23,10 +28,10 @@ import { run } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
 
 /**
- * Install components of the final stage that make up the LLVM half of the toolchain
- * (each is an LLVM install component: a tool, `clang-resource-headers`, or the
- * compiler-rt `builtins`/`runtimes`). clang and lld's symlinks (clang++, clang-cl,
- * ld.lld, ld64.lld, lld-link, wasm-ld) install with them.
+ * Install components of the final stage that make up the LLVM half of the toolchain (each is
+ * an LLVM install component: a tool, `clang-resource-headers`, or the compiler-rt
+ * `builtins`/`runtimes`). clang and lld's symlinks (clang++, clang-cl, ld.lld, ld64.lld,
+ * lld-link, wasm-ld) install with them.
  */
 export const DISTRIBUTION_COMPONENTS = [
   "clang", "clang-format", "clang-resource-headers", "lld", "builtins", "runtimes",
@@ -36,142 +41,23 @@ export const DISTRIBUTION_COMPONENTS = [
 ];
 
 /**
- * -D settings passed ahead of `-C Release.cmake`. The LLVM_RELEASE_* ones are the
- * cache file's documented inputs. Marked "deviation" where the resulting binaries
- * differ from what upstream's recipe alone would produce.
+ * Tools a Bun build invokes next to the clang it is pointed at (scripts/build/tools.ts;
+ * llvm-lib/llvm-rc/llvm-mt for the Windows targets, dsymutil for macOS). buildInstrumented
+ * checks the instrumented stage built them, since training fails late and obscurely otherwise.
  */
+const TRAINING_TOOLS = [
+  "lld", "llvm-config", "llvm-ar", "llvm-ranlib", "llvm-lib", "llvm-nm", "llvm-objcopy", "llvm-objdump", "llvm-strip",
+  "llvm-readelf", "llvm-symbolizer", "llvm-profdata", "llvm-rc", "llvm-mt", "llvm-cxxfilt", "dsymutil",
+];
+
 /**
- * deviation (aarch64): what we BOLT is compiled without jump tables. AArch64 jump tables
- * are addressed through an `adr` inside the function; in a function whose CFG llvm-bolt
- * cannot fully rebuild that `adr` cannot be relaxed and llvm-bolt aborts ("cannot relax
- * ADR in non-simple function"). It is a function attribute, so ThinLTO codegen honors it.
+ * deviation (aarch64): what we BOLT is compiled without jump tables. AArch64 jump tables are
+ * addressed through an `adr` inside the function; in a function whose CFG llvm-bolt cannot
+ * fully rebuild that `adr` cannot be relaxed and llvm-bolt aborts ("cannot relax ADR in
+ * non-simple function"). It is a function attribute, so ThinLTO codegen honors it. The
+ * instrumented stage gets it too so its profile matches the final stage's control flow.
  */
 export const NO_JUMP_TABLES = "-fno-jump-tables";
-
-export function releaseOverrides(o: Options): Record<string, string> {
-  const p = paths(o);
-  const boltable = o.host === "linux-aarch64" && o.llvmBolt ? NO_JUMP_TABLES : "";
-  // clang's bootstrap hands `BOOTSTRAP_<X>` to the next stage as `<X>`, so a setting for
-  // all three stages is spelled three times.
-  const everyStage = (name: string, value: string) => ({ [name]: value, [`BOOTSTRAP_${name}`]: value, [`BOOTSTRAP_BOOTSTRAP_${name}`]: value });
-  return {
-    // Release.cmake inputs. Upstream: clang;lld;lldb;clang-tools-extra;polly;mlir;flang;bolt and
-    // compiler-rt;libcxx;openmp;libcxxabi;libunwind;flang-rt.
-    LLVM_RELEASE_ENABLE_PROJECTS: "clang;lld",
-    LLVM_RELEASE_ENABLE_RUNTIMES: "compiler-rt",
-    // Upstream: clang;package;check-all;check-llvm;check-clang (what `ninja stage2-<x>` can
-    // reach in the final stage). We install a distribution instead of packaging, and leave
-    // the test suites to upstream.
-    LLVM_RELEASE_FINAL_STAGE_TARGETS: "install-distribution",
-    // What that distribution is: the files of the LLVM install a Bun build uses.
-    BOOTSTRAP_BOOTSTRAP_LLVM_DISTRIBUTION_COMPONENTS: DISTRIBUTION_COMPONENTS.join(";"),
-
-    CMAKE_INSTALL_PREFIX: p.llvmInstall, // the bootstrap forwards this one itself
-    // Upstream builds every backend; Bun targets x86_64 and aarch64.
-    ...everyStage("LLVM_TARGETS_TO_BUILD", "X86;AArch64"),
-    // llvm-mt and lld-link's manifest merging need libxml2; fail at configure rather than ship
-    // without, and link the image's static build (bun/Dockerfile) so the binaries do not
-    // depend on a host libxml2.so — its soname differs between distros.
-    ...everyStage("LLVM_ENABLE_LIBXML2", "FORCE_ON"),
-    ...everyStage("LIBXML2_LIBRARY", join(o.libxml2, "lib", "libxml2.a")),
-    ...everyStage("LIBXML2_INCLUDE_DIR", join(o.libxml2, "include", "libxml2")),
-    ...everyStage("CMAKE_PREFIX_PATH", o.libxml2),
-    ...everyStage("LLVM_PARALLEL_LINK_JOBS", String(Math.max(1, Math.floor(o.jobs / 8)))),
-
-    // compiler-rt (builtins, sanitizers, profile) for the other Linux architecture too when the
-    // variant targets it (CI builds every lane from one host). Upstream: native only. It compiles
-    // against the image's <triple> cross gcc/libc (bun/Dockerfile).
-    ...(o.variant.target.os === "linux" && `linux-${o.variant.target.arch}` !== o.host
-      ? {
-          BOOTSTRAP_BOOTSTRAP_LLVM_BUILTIN_TARGETS: `default;${o.crossTriple}`,
-          BOOTSTRAP_BOOTSTRAP_LLVM_RUNTIME_TARGETS: `default;${o.crossTriple}`,
-          [`BOOTSTRAP_BOOTSTRAP_BUILTINS_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
-          [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`]: "Linux",
-          [`BOOTSTRAP_BOOTSTRAP_RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`]: "compiler-rt",
-        }
-      : {}),
-
-    // deviation: clang, lld (every final-stage executable) allocate with mimalloc instead
-    // of glibc malloc — the ThinLTO link runs LLVM's optimizer on every core at once.
-    // Release.cmake's own final-stage linker flags (--emit-relocs for BOLT, -znow) are
-    // repeated here because setting the variable pre-empts its set(). -pthread: mimalloc
-    // uses pthread_key_*, which glibc < 2.34 keeps in libpthread.
-    ...(o.mimalloc ? { BOOTSTRAP_BOOTSTRAP_CMAKE_EXE_LINKER_FLAGS: `-Wl,--emit-relocs,-znow -pthread ${o.mimalloc}` } : {}),
-    // Instrumented stage too, so its profile matches the final stage's control flow.
-    ...(boltable ? { BOOTSTRAP_CMAKE_C_FLAGS: boltable, BOOTSTRAP_CMAKE_CXX_FLAGS: boltable, BOOTSTRAP_BOOTSTRAP_CMAKE_C_FLAGS: boltable, BOOTSTRAP_BOOTSTRAP_CMAKE_CXX_FLAGS: boltable } : {}),
-
-    // deviation: no dlopen'd plugin support in clang / LLVM passes. Nothing then has to stay
-    // exported from the executables, so ThinLTO can internalize and inline across far more
-    // of clang and lld. Bun's build loads no compiler plugins. Upstream: ON (general-purpose).
-    BOOTSTRAP_BOOTSTRAP_CLANG_PLUGIN_SUPPORT: "OFF",
-    BOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_PLUGINS: "OFF",
-
-    // BOLT is applied by boltWithBun() below instead (deviation: workload, and lld too).
-    // Release.cmake still links with --emit-relocs,-znow on Linux, which BOLT needs.
-    BOOTSTRAP_BOOTSTRAP_CLANG_BOLT: "OFF",
-
-    // Stage 1 is built with the host LLVM.
-    CMAKE_C_COMPILER: join(o.hostLlvm, "bin", "clang"),
-    CMAKE_CXX_COMPILER: join(o.hostLlvm, "bin", "clang++"),
-    LLVM_ENABLE_LLD: "ON",
-
-    // The training workload, for the instrumented stage (BOOTSTRAP_ = second stage).
-    BOOTSTRAP_CLANG_PGO_TRAINING_DATA_SOURCE_DIR: join(o.checkout, "bun", "train-clang"),
-    // Everything Bun's build looks for next to the instrumented clang it is pointed at
-    // (scripts/build/tools.ts; llvm-lib/llvm-rc/llvm-mt for the Windows target, dsymutil for
-    // macOS). Listed in full: the outer ninja must have built them before the training
-    // command starts its own nested build in the same tree.
-    // `runtimes` (compiler-rt): the training build may link a sanitizer or builtins from the
-    // instrumented clang's resource directory (debug and asan variants do).
-    BOOTSTRAP_CLANG_PGO_TRAINING_DEPS: "lld;llvm-config;llvm-ar;llvm-ranlib;llvm-lib;llvm-nm;llvm-objcopy;llvm-objdump;llvm-strip;llvm-readelf;llvm-symbolizer;llvm-profdata;llvm-rc;llvm-mt;dsymutil;runtimes",
-  };
-}
-
-export function buildLlvm(o: Options): void {
-  const p = paths(o);
-  const llvmRev = run(["git", "rev-parse", "HEAD"], { cwd: o.llvmProject, capture: true }).trim();
-  const key = `llvm-${RECIPE_VERSION}-${llvmRev}-bolt=${o.llvmBolt}-mimalloc=${o.mimalloc !== undefined}-${o.variant.name}`;
-  if (isDone(p.llvmInstall, key)) {
-    console.log(`llvm: up to date (${key})`);
-    return;
-  }
-
-  if (o.mimalloc !== undefined && !exists(o.mimalloc)) {
-    throw new Error(`--mimalloc: ${o.mimalloc} does not exist (bun/Dockerfile builds it; pass --mimalloc=none to use the libc allocator)`);
-  }
-  mkdir(p.llvmBuild);
-  // Before the hours-long part: make sure the training workload configures here.
-  chmodSync(join(o.checkout, "bun", "train.ts"), 0o755);
-  run([join(o.checkout, "bun", "train.ts"), "preflight"], { env: trainingEnv(o) });
-
-  run([
-    "cmake",
-    "-G",
-    "Ninja",
-    "-S",
-    join(o.llvmProject, "llvm"),
-    "-B",
-    p.llvmBuild,
-    ...Object.entries(releaseOverrides(o)).map(([k, v]) => `-D${k}=${v}`),
-    "-C",
-    join(o.llvmProject, "clang", "cmake", "caches", "Release.cmake"),
-  ]);
-
-  // One target drives all three stages: stage1 → stage2-instrumented (+ generate-profdata,
-  // which builds bun/train-clang with the instrumented clang) → stage2 → install-distribution.
-  remove(p.llvmInstall);
-  run(["ninja", "-C", p.llvmBuild, `-j${o.jobs}`, "stage2-install-distribution"], {
-    env: { ...trainingEnv(o), NINJA_STATUS: "[%f/%t %es] " },
-  });
-
-  if (o.llvmBolt) boltWithBun(o);
-  // For package.ts, so that job needs no llvm-project checkout.
-  for (const [name, src] of Object.entries(LLVM_LICENSES)) cpSync(join(o.llvmProject, src), join(p.llvmInstall, "licenses", name));
-  const mimallocLicense = o.mimalloc && join(o.mimalloc, "..", "LICENSE"); // where bun/Dockerfile puts it
-  if (mimallocLicense && exists(mimallocLicense)) cpSync(mimallocLicense, join(p.llvmInstall, "licenses", "mimalloc-LICENSE"));
-  write(join(p.llvmInstall, "llvm-project.rev"), llvmRev + "\n");
-  markDone(p.llvmInstall, key);
-}
 
 const LLVM_LICENSES: Record<string, string> = {
   "LLVM-LICENSE.TXT": "llvm/LICENSE.TXT",
@@ -179,6 +65,238 @@ const LLVM_LICENSES: Record<string, string> = {
   "lld-LICENSE.TXT": "lld/LICENSE.TXT",
   "compiler-rt-LICENSE.TXT": "compiler-rt/LICENSE.TXT",
 };
+
+/** Where things are inside paths(o).llvmBuild / llvmFinal. */
+function layout(o: Options) {
+  const p = paths(o);
+  const instrumented = join(p.llvmBuild, "tools", "clang", "stage2-instrumented-bins");
+  return {
+    /** stage 1: compiles the instrumented and the final stage; its llvm-profdata merges profiles */
+    stage1Bin: join(p.llvmBuild, "bin"),
+    stage1Resource: join(p.llvmBuild, "lib", "clang"),
+    instrumentedBin: join(instrumented, "bin"),
+    instrumentedResource: join(instrumented, "lib", "clang"),
+    /** written when buildInstrumented finished; content = its cache key */
+    instrumentedStamp: join(p.llvmBuild, "instrumented.done"),
+    profiles: join(p.llvmFinal, "profiles"),
+    profdata: join(p.llvmFinal, "clang.profdata"),
+    finalBuild: join(p.llvmFinal, "build"),
+    boltWork: join(p.llvmFinal, "bolt"),
+  };
+}
+
+function llvmRev(o: Options): string {
+  return run(["git", "rev-parse", "HEAD"], { cwd: o.llvmProject, capture: true }).trim();
+}
+
+/** C/C++ flags added to the instrumented and final stages (see NO_JUMP_TABLES); "" = none. */
+function stageCFlags(o: Options): string {
+  return o.host === "linux-aarch64" && o.llvmBolt ? NO_JUMP_TABLES : "";
+}
+
+/** Cache settings every stage gets. */
+function everyStageCache(o: Options): Record<string, string> {
+  return {
+    // Upstream builds every backend (Release.cmake l.72 makes stage 1 Native-only); Bun targets
+    // x86_64 and aarch64.
+    LLVM_TARGETS_TO_BUILD: "X86;AArch64",
+    // llvm-mt and lld-link's manifest merging need libxml2; fail at configure rather than ship
+    // without, and link the image's static build (bun/Dockerfile) so the binaries do not depend
+    // on a host libxml2.so — its soname differs between distros.
+    LLVM_ENABLE_LIBXML2: "FORCE_ON",
+    LIBXML2_LIBRARY: join(o.libxml2, "lib", "libxml2.a"),
+    LIBXML2_INCLUDE_DIR: join(o.libxml2, "include", "libxml2"),
+    CMAKE_PREFIX_PATH: o.libxml2,
+    LLVM_PARALLEL_LINK_JOBS: String(Math.max(1, Math.floor(o.jobs / 8))),
+  };
+}
+
+/**
+ * -D settings passed ahead of `-C Release.cmake` for stage 1 and the instrumented stage
+ * (clang's bootstrap hands `BOOTSTRAP_<X>` to the next stage as `<X>`). The LLVM_RELEASE_*
+ * ones are the cache file's documented inputs.
+ */
+function instrumentedCache(o: Options): Record<string, string> {
+  const cache: Record<string, string> = {
+    // Release.cmake inputs (l.52-53); they size stage 1 and the instrumented stage. Upstream:
+    // clang;lld;lldb;clang-tools-extra;polly;mlir;flang;bolt and compiler-rt;libcxx;openmp;
+    // libcxxabi;libunwind;flang-rt.
+    LLVM_RELEASE_ENABLE_PROJECTS: "clang;lld",
+    LLVM_RELEASE_ENABLE_RUNTIMES: "compiler-rt",
+    // Stage 1 is built with the host LLVM.
+    CMAKE_C_COMPILER: join(o.hostLlvm, "bin", "clang"),
+    CMAKE_CXX_COMPILER: join(o.hostLlvm, "bin", "clang++"),
+    LLVM_ENABLE_LLD: "ON",
+  };
+  for (const [name, value] of Object.entries(everyStageCache(o))) {
+    cache[name] = value;
+    cache[`BOOTSTRAP_${name}`] = value;
+  }
+  if (stageCFlags(o)) {
+    cache.BOOTSTRAP_CMAKE_C_FLAGS = stageCFlags(o);
+    cache.BOOTSTRAP_CMAKE_CXX_FLAGS = stageCFlags(o);
+  }
+  return cache;
+}
+
+/**
+ * The final stage's cache, as Release.cmake's bootstrap chain would configure it
+ * (set_final_stage_var / set_instrument_and_final_stage_var, and clang/CMakeLists.txt's
+ * pass-through of the compiler and profile), with our deviations marked.
+ */
+function finalStageCache(o: Options): Record<string, string> {
+  const p = paths(o);
+  const l = layout(o);
+  const crossLinux = o.variant.target.os === "linux" && `linux-${o.variant.target.arch}` !== o.host;
+  // Release.cmake l.181-191: RELEASE_LINKER_FLAGS on Linux (what BOLT needs from the link).
+  const releaseLinkerFlags = "-Wl,--emit-relocs,-znow";
+  const cache: Record<string, string> = {
+    // clang/CMakeLists.txt: a PGO final stage is compiled by the compilers that built the
+    // instrumented stage (stage 1's), with the merged profile.
+    CMAKE_C_COMPILER: join(l.stage1Bin, "clang"),
+    CMAKE_CXX_COMPILER: join(l.stage1Bin, "clang++"),
+    CMAKE_ASM_COMPILER: join(l.stage1Bin, "clang"),
+    CMAKE_ASM_COMPILER_ID: "Clang",
+    LLVM_PROFDATA_FILE: l.profdata,
+    // Release.cmake l.69, passed through every stage.
+    CMAKE_BUILD_TYPE: "Release",
+    // l.165-169 set_instrument_and_final_stage_var
+    CMAKE_POSITION_INDEPENDENT_CODE: "ON",
+    LLVM_ENABLE_LTO: "Thin",
+    LLVM_ENABLE_LLD: "ON",
+    // l.187-191
+    CMAKE_SHARED_LINKER_FLAGS: releaseLinkerFlags,
+    CMAKE_MODULE_LINKER_FLAGS: releaseLinkerFlags,
+    // deviation: clang, lld (every final-stage executable) allocate with mimalloc instead of
+    // glibc malloc — the ThinLTO link runs LLVM's optimizer on every core at once. -pthread:
+    // mimalloc uses pthread_key_*, which glibc < 2.34 keeps in libpthread.
+    CMAKE_EXE_LINKER_FLAGS: o.mimalloc !== undefined ? `${releaseLinkerFlags} -pthread ${o.mimalloc}` : releaseLinkerFlags,
+    // l.194-195 set_final_stage_var
+    LLVM_ENABLE_PROJECTS: "clang;lld",
+    LLVM_ENABLE_RUNTIMES: "compiler-rt",
+    // l.196-198: CLANG_BOLT=INSTRUMENT upstream; ours is boltWithBun() (deviation: workload, and
+    // lld too).
+    CLANG_BOLT: "OFF",
+    // l.202-205
+    LLVM_USE_STATIC_ZSTD: "ON",
+    LLVM_ENABLE_FATLTO: "ON",
+    ...everyStageCache(o),
+    // We install a distribution (the files of the LLVM install a Bun build uses) where upstream
+    // runs `package` over everything (l.68 LLVM_RELEASE_FINAL_STAGE_TARGETS).
+    LLVM_DISTRIBUTION_COMPONENTS: DISTRIBUTION_COMPONENTS.join(";"),
+    CMAKE_INSTALL_PREFIX: p.llvmInstall,
+    // deviation: no dlopen'd plugin support in clang / LLVM passes. Nothing then has to stay
+    // exported from the executables, so ThinLTO can internalize and inline across far more of
+    // clang and lld. Bun's build loads no compiler plugins. Upstream: ON (general-purpose).
+    CLANG_PLUGIN_SUPPORT: "OFF",
+    LLVM_ENABLE_PLUGINS: "OFF",
+  };
+  if (stageCFlags(o)) {
+    cache.CMAKE_C_FLAGS = stageCFlags(o);
+    cache.CMAKE_CXX_FLAGS = stageCFlags(o);
+  }
+  if (crossLinux) {
+    // compiler-rt (builtins, sanitizers, profile) for the other Linux architecture too when the
+    // variant targets it (CI builds every lane from one host). Upstream: native only. It
+    // compiles against the image's <triple> cross gcc/libc (bun/Dockerfile).
+    cache.LLVM_BUILTIN_TARGETS = `default;${o.crossTriple}`;
+    cache.LLVM_RUNTIME_TARGETS = `default;${o.crossTriple}`;
+    cache[`BUILTINS_${o.crossTriple}_CMAKE_SYSTEM_NAME`] = "Linux";
+    cache[`RUNTIMES_${o.crossTriple}_CMAKE_SYSTEM_NAME`] = "Linux";
+    cache[`RUNTIMES_${o.crossTriple}_LLVM_ENABLE_RUNTIMES`] = "compiler-rt";
+  }
+  return cache;
+}
+
+function cmakeConfigure(source: string, buildDir: string, cache: Record<string, string>, extra: string[] = []): void {
+  run(["cmake", "-G", "Ninja", "-S", source, "-B", buildDir, ...Object.entries(cache).map(([k, v]) => `-D${k}=${v}`), ...extra]);
+}
+
+/** Stage 1 + the PGO-instrumented clang/lld (variant-independent), packed into llvmInstrumentedTar. */
+export function buildInstrumented(o: Options): void {
+  const p = paths(o);
+  const l = layout(o);
+  const key = `llvm-instrumented-${RECIPE_VERSION}-${llvmRev(o)}${stageCFlags(o)}`;
+  if (exists(l.instrumentedStamp) && isDone(p.llvmBuild, key)) {
+    console.log(`llvm instrumented stage: up to date (${key})`);
+  } else {
+    mkdir(p.llvmBuild);
+    cmakeConfigure(join(o.llvmProject, "llvm"), p.llvmBuild, instrumentedCache(o), ["-C", join(o.llvmProject, "clang", "cmake", "caches", "Release.cmake")]);
+    // `stage2-instrumented`: stage 1's clang/lld/compiler-rt, then the instrumented stage's
+    // configure and its `all` (clang, lld, compiler-rt, the llvm tools). Profile collection is a
+    // separate target there (generate-profdata) that we do not build: buildFinal trains.
+    run(["ninja", "-C", p.llvmBuild, `-j${o.jobs}`, "stage2-instrumented"], { env: { NINJA_STATUS: "[%f/%t %es] " } });
+    for (const tool of ["clang", ...TRAINING_TOOLS]) {
+      if (!exists(join(l.instrumentedBin, tool))) throw new Error(`the instrumented stage did not build bin/${tool}`);
+    }
+    write(l.instrumentedStamp, key + "\n");
+    markDone(p.llvmBuild, key);
+  }
+  // What buildFinal needs, at the same relative paths: stage 1's compiler + resource dir (it
+  // compiles the final stage and merges profiles) and the instrumented compiler, tools and
+  // resource dir (they compile Bun during training).
+  const rel = (abs: string) => abs.slice(p.llvmBuild.length + 1);
+  run(["tar", "-C", p.llvmBuild, "-I", `zstd -T${o.jobs} -10`, "-cf", p.llvmInstrumentedTar,
+    rel(l.instrumentedStamp), rel(l.stage1Bin), rel(l.stage1Resource), rel(l.instrumentedBin), rel(l.instrumentedResource)]);
+  console.log(`llvm instrumented stage: packed ${p.llvmInstrumentedTar}`);
+}
+
+/** The variant's clang/lld: train, build the final stage with the profile, install, BOLT. */
+export function buildFinal(o: Options): void {
+  const p = paths(o);
+  const l = layout(o);
+  if (!exists(l.instrumentedStamp)) {
+    if (!exists(p.llvmInstrumentedTar)) throw new Error(`no instrumented LLVM: run \`toolchain.ts llvm-instrumented\` first, or put its tarball at ${p.llvmInstrumentedTar}`);
+    mkdir(p.llvmBuild);
+    run(["tar", "-C", p.llvmBuild, "-I", "zstd", "-xf", p.llvmInstrumentedTar]);
+  }
+  const key = `llvm-${RECIPE_VERSION}-${llvmRev(o)}-${o.variant.name}-bolt=${o.llvmBolt}-mimalloc=${o.mimalloc !== undefined}`;
+  if (isDone(p.llvmInstall, key)) {
+    console.log(`llvm: up to date (${key})`);
+    return;
+  }
+  if (o.mimalloc !== undefined && !exists(o.mimalloc)) {
+    throw new Error(`--mimalloc: ${o.mimalloc} does not exist (bun/Dockerfile builds it; pass --mimalloc=none to use the libc allocator)`);
+  }
+  chmodSync(join(o.checkout, "bun", "train.ts"), 0o755);
+  remove(p.llvmFinal);
+  remove(p.llvmInstall);
+
+  // 1. Profile: build the variant's Bun with the instrumented clang and lld. One .profraw per
+  //    4-way merge pool rather than one file every process locks (perf-training's lit config
+  //    does the same); LLD_IN_TEST=1 makes lld return from main instead of _exit-ing, so its
+  //    atexit profile writer runs — without it the links contribute nothing.
+  mkdir(l.profiles);
+  run([join(o.checkout, "bun", "train.ts"), "clang"], {
+    env: {
+      ...trainingEnv(o),
+      CC: join(l.instrumentedBin, "clang"),
+      CXX: join(l.instrumentedBin, "clang++"),
+      LLVM_PROFILE_FILE: join(l.profiles, "bun-%4m.profraw"),
+      LLD_IN_TEST: "1",
+    },
+  });
+  const profraw = readdirSync(l.profiles).filter(f => f.endsWith(".profraw"));
+  if (profraw.length === 0) throw new Error(`training wrote no profiles to ${l.profiles}`);
+  run([join(l.stage1Bin, "llvm-profdata"), "merge", "-o", l.profdata, ...profraw.map(f => join(l.profiles, f))]);
+
+  // 2. The final stage.
+  cmakeConfigure(join(o.llvmProject, "llvm"), l.finalBuild, finalStageCache(o));
+  run(["ninja", "-C", l.finalBuild, `-j${o.jobs}`, "install-distribution"], { env: { NINJA_STATUS: "[%f/%t %es] " } });
+
+  // 3. BOLT, licenses, provenance.
+  if (o.llvmBolt) boltWithBun(o);
+  for (const [name, src] of Object.entries(LLVM_LICENSES)) cpSync(join(o.llvmProject, src), join(p.llvmInstall, "licenses", name));
+  const mimallocLicense = o.mimalloc && join(o.mimalloc, "..", "LICENSE"); // where bun/Dockerfile puts it
+  if (mimallocLicense && exists(mimallocLicense)) cpSync(mimallocLicense, join(p.llvmInstall, "licenses", "mimalloc-LICENSE"));
+  write(join(p.llvmInstall, "llvm-project.rev"), llvmRev(o) + "\n");
+  markDone(p.llvmInstall, key);
+}
+
+/** What toolchain.json records for the LLVM half: both configures. */
+export function llvmProvenance(o: Options): Record<string, unknown> {
+  return { instrumented: instrumentedCache(o), final: finalStageCache(o) };
+}
 
 /** Binaries in the install's bin/ that get BOLTed: the clang driver binary and lld. */
 function boltTargets(installBin: string): string[] {
@@ -188,36 +306,36 @@ function boltTargets(installBin: string): string[] {
 }
 
 /**
- * BOLT clang and lld in the install tree: instrument both in place, build Bun with
- * them (bun/train.ts clang-bolt), then optimize the originals with the collected
- * profile. llvm-bolt / merge-fdata are the host LLVM's, as on the rust side.
+ * BOLT clang and lld in the install tree: instrument both in place, build the variant's Bun
+ * with them (bun/train.ts clang-bolt), then optimize the originals with the collected profile.
+ * llvm-bolt / merge-fdata are the host LLVM's, as on the rust side. Flags:
+ * clang/utils/perf-training/perf-helper.py bolt_optimize().
  */
 function boltWithBun(o: Options): void {
   const p = paths(o);
+  const l = layout(o);
   const bin = join(p.llvmInstall, "bin");
   const llvmBolt = join(o.hostLlvm, "bin", "llvm-bolt");
   const mergeFdata = join(o.hostLlvm, "bin", "merge-fdata");
-  const work = join(p.llvmBuild, "bun-bolt");
-  remove(work);
-  mkdir(work);
+  remove(l.boltWork);
+  mkdir(l.boltWork);
 
   const targets = boltTargets(bin);
   for (const name of targets) {
-    copyFileSync(join(bin, name), join(work, `${name}.prebolt`));
-    run([llvmBolt, join(work, `${name}.prebolt`), "-o", join(bin, name), "-instrument", "--instrumentation-file-append-pid", `--instrumentation-file=${join(work, name)}.fdata`]);
+    copyFileSync(join(bin, name), join(l.boltWork, `${name}.prebolt`));
+    run([llvmBolt, join(l.boltWork, `${name}.prebolt`), "-o", join(bin, name), "-instrument", "--instrumentation-file-append-pid", `--instrumentation-file=${join(l.boltWork, name)}.fdata`]);
   }
 
-  // LLD_IN_TEST=1 as in train-clang/CMakeLists.txt: lld must return from main for
-  // BOLT's runtime to write its profile at exit.
+  // LLD_IN_TEST=1 as during PGO training: lld must return from main for BOLT's runtime to
+  // write its profile at exit.
   run([join(o.checkout, "bun", "train.ts"), "clang-bolt", p.llvmInstall], { env: { ...trainingEnv(o), LLD_IN_TEST: "1" } });
 
   for (const name of targets) {
-    const profiles = readdirSync(work).filter(f => f.startsWith(`${name}.fdata`)).map(f => join(work, f));
+    const profiles = readdirSync(l.boltWork).filter(f => f.startsWith(`${name}.fdata`)).map(f => join(l.boltWork, f));
     if (profiles.length === 0) throw new Error(`BOLT: no profile was written for ${name}`);
-    run([mergeFdata, ...profiles, "-o", join(work, `${name}.merged.fdata`)], { capture: true });
-    // Flags: clang/utils/perf-training/perf-helper.py bolt_optimize().
+    run([mergeFdata, ...profiles, "-o", join(l.boltWork, `${name}.merged.fdata`)], { capture: true });
     run([
-      llvmBolt, join(work, `${name}.prebolt`), "-o", join(bin, name), "-data", join(work, `${name}.merged.fdata`),
+      llvmBolt, join(l.boltWork, `${name}.prebolt`), "-o", join(bin, name), "-data", join(l.boltWork, `${name}.merged.fdata`),
       "-reorder-blocks=ext-tsp", "-reorder-functions=cdsort", "-split-functions", "-split-all-cold", "-split-eh", "-dyno-stats", "-use-gnu-stack", "-update-debug-sections",
     ]);
   }

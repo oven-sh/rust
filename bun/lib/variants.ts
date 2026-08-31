@@ -55,9 +55,3 @@ export function findVariant(host: "linux-x64" | "linux-aarch64", name: string): 
   if (v === undefined) throw new Error(`no variant ${name} for ${host}; have: ${variantsFor(host).map(v => v.name).join(", ")}`);
   return v;
 }
-
-/** The executable a full build of `v` produces, relative to its build directory (for the smoke run). */
-export function builtBinary(v: Variant): string {
-  const exe = v.target.os === "windows" ? ".exe" : "";
-  return v.args.includes("--profile=debug") ? `bun-debug${exe}` : v.args.includes("--asan=on") ? `bun-asan${exe}` : `bun${exe}`;
-}

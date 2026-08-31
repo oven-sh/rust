@@ -2,14 +2,15 @@
 // src/llvm-project submodule, each built with its upstream release recipe and
 // PGO/BOLT-trained on compiling Bun. See bun/README.md.
 //
-//   node bun/toolchain.ts [rust|llvm|package|all|probe] [--option=value ...]
+//   node bun/toolchain.ts [command] [--option=value ...]   (commands: lib/options.ts COMMANDS)
 
 import { freemem, totalmem } from "node:os";
 import { statfsSync } from "node:fs";
-import { buildLlvm } from "./lib/llvm.ts";
-import { type Options, parseOptions } from "./lib/options.ts";
+import { buildFinal as buildLlvm, buildInstrumented as buildLlvmInstrumented } from "./lib/llvm.ts";
+import { type Command, type Options, parseOptions } from "./lib/options.ts";
 import { packageToolchain } from "./lib/package.ts";
 import { buildRust } from "./lib/rust.ts";
+import { VARIANTS } from "./lib/variants.ts";
 import { run } from "./lib/run.ts";
 import { mkdir } from "./lib/fs.ts";
 
@@ -17,17 +18,27 @@ const [major] = process.versions.node.split(".").map(Number);
 if (major! < 25) throw new Error(`node ${process.versions.node}: need node 25 or newer (runs .ts directly)`);
 
 const options = parseOptions(process.argv.slice(2));
+if (options.command === "matrix") {
+  // One entry per (host, variant) job; the workflow maps host to a runner label.
+  const include = VARIANTS.filter(v => options.variantFilter === undefined || options.variantFilter.includes(v.name)).flatMap(v => v.hosts.map(host => ({ host, variant: v.name })));
+  if (include.length === 0) throw new Error(`--variants=${options.variantFilter?.join(",")} matches no variant`);
+  process.stdout.write(JSON.stringify({ include }) + "\n");
+  process.exit(0);
+}
 mkdir(options.buildDir);
 probe(options);
 
-const steps: Record<Options["command"], () => void> = {
+const steps: Record<Command, () => void> = {
   probe: () => {},
-  rust: () => buildRust(options),
+  "llvm-instrumented": () => buildLlvmInstrumented(options),
   llvm: () => buildLlvm(options),
+  rust: () => buildRust(options),
   package: () => packageToolchain(options),
+  matrix: () => {},
   all: () => {
-    buildRust(options);
+    buildLlvmInstrumented(options);
     buildLlvm(options);
+    buildRust(options);
     packageToolchain(options);
   },
 };
