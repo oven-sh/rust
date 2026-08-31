@@ -273,6 +273,10 @@ fn execute_pipeline(
                 builder.run(section)
             })?;
 
+            // Nothing runs the instrumented (stage 2) compiler before this point today; make sure
+            // it stays that way for the profile's sake, as with LLVM below.
+            reset_directory(&rustc_profile_dir_root)?;
+
             let rustc_profile = stage.section("Gather rustc profiles", |_| {
                 gather_rustc_profiles(env, &rustc_profile_dir_root)
             })?;
@@ -312,6 +316,12 @@ fn execute_pipeline(
                     .avoid_rustc_rebuild()
                     .run(section)
             })?;
+
+            // `pgo.llvm.generate` instruments the whole LLVM build tree, llvm-tblgen included, and
+            // llvm-tblgen runs throughout that build, so the directory already holds its profiles
+            // (TableGen and regex code: a quarter of all counts next to a small training set).
+            // Only what the training below records should shape libLLVM.
+            reset_directory(&llvm_profile_dir_root)?;
 
             let profile = stage.section("Gather profiles", |_| {
                 gather_llvm_profiles(env, &llvm_profile_dir_root)
