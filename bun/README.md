@@ -28,7 +28,7 @@ that configuration.
 - `ci-<os>-<arch>[-<abi>|-asan]` — one per oven-sh/bun CI build lane (`buildPlatforms`
   in its `.buildkite/ci.mjs`, with the flags its `getBuildArgs` passes). All of them build
   on the linux-aarch64 host, as Bun's CI does.
-- `dev` — `bun bd` (a debug, ASan build for the host), on both hosts. For developer machines.
+- `dev` — `bun bd` (a debug, ASan build for the host), on linux-x64. For developer machines.
 
 ## Output
 

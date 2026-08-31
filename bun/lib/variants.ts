@@ -41,9 +41,8 @@ export const VARIANTS: readonly Variant[] = [
   ci({ os: "freebsd", arch: "aarch64" }),
   ci({ os: "windows", arch: "x64" }),
   ci({ os: "windows", arch: "aarch64" }),
-  // `bun bd` (package.json "bd"): debug, ASan, host only.
+  // `bun bd` (package.json "bd"): debug, ASan, host only. x64: what developer machines run.
   { name: "dev", target: { os: "linux", arch: "x64", abi: "gnu" }, args: ["--profile=debug"], hosts: ["linux-x64"] },
-  { name: "dev", target: { os: "linux", arch: "aarch64", abi: "gnu" }, args: ["--profile=debug"], hosts: ["linux-aarch64"] },
 ];
 
 export function variantsFor(host: "linux-x64" | "linux-aarch64"): Variant[] {
