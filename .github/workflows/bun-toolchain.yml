@@ -25,6 +25,9 @@ on:
       variants:
         description: only these variants, comma-separated (default is all of bun/lib/variants.ts)
         required: false
+      halves:
+        description: llvm, rust or llvm,rust (default both)
+        required: false
       skip-bolt:
         type: boolean
         default: false
@@ -55,23 +58,27 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    # pairs: the (host, variant) jobs; hosts: the hosts those need; halves: llvm and/or rust.
     outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
+      pairs: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).pairs) }}
+      hosts: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).hosts) }}
+      llvm: ${{ contains(fromJSON(steps.matrix.outputs.matrix).halves, 'llvm') }}
+      rust: ${{ contains(fromJSON(steps.matrix.outputs.matrix).halves, 'rust') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with: { sparse-checkout: bun, fetch-depth: 1 }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 26 }
       - id: matrix
-        run: echo "matrix=$(node bun/toolchain.ts matrix ${{ inputs.variants && format('--variants={0}', inputs.variants) || '' }})" | tee -a "$GITHUB_OUTPUT"
+        run: echo "matrix=$(node bun/toolchain.ts matrix ${{ inputs.variants && format('--variants={0}', inputs.variants) || '' }} ${{ inputs.halves && format('--halves={0}', inputs.halves) || '' }})" | tee -a "$GITHUB_OUTPUT"
 
   # The build environment image. Pushing needs the workflow token to be allowed to publish
   # packages; if it is not, the other jobs fall back to building it locally.
   image:
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        host: [linux-x64, linux-aarch64]
+      matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
     name: image ${{ matrix.host }}
     runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
     permissions: { contents: read, packages: write }
@@ -101,11 +108,11 @@ jobs:
           done
 
   llvm-instrumented:
-    needs: image
+    needs: [plan, image]
+    if: needs.plan.outputs.llvm == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        host: [linux-x64, linux-aarch64]
+      matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
     name: llvm-instrumented ${{ matrix.host }}
     runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
     timeout-minutes: 360
@@ -134,7 +141,7 @@ jobs:
     needs: [plan, llvm-instrumented]
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
     name: llvm ${{ matrix.variant }} (${{ matrix.host }})
     runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
     timeout-minutes: 360
@@ -167,9 +174,10 @@ jobs:
 
   rust:
     needs: [plan, image]
+    if: needs.plan.outputs.rust == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
     name: rust ${{ matrix.variant }} (${{ matrix.host }})
     runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
     timeout-minutes: 360
@@ -200,6 +208,8 @@ jobs:
 
   release:
     needs: [llvm, rust]
+    # A half that plan left out is "skipped", which would otherwise skip this too.
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

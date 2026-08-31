@@ -19,10 +19,13 @@ if (major! < 25) throw new Error(`node ${process.versions.node}: need node 25 or
 
 const options = parseOptions(process.argv.slice(2));
 if (options.command === "matrix") {
-  // One entry per (host, variant) job; the workflow maps host to a runner label.
-  const include = VARIANTS.filter(v => options.variantFilter === undefined || options.variantFilter.includes(v.name)).flatMap(v => v.hosts.map(host => ({ host, variant: v.name })));
-  if (include.length === 0) throw new Error(`--variants=${options.variantFilter?.join(",")} matches no variant`);
-  process.stdout.write(JSON.stringify({ include }) + "\n");
+  // What the workflow runs: `pairs` — one llvm and one rust job per (host, variant); `hosts` —
+  // one image and one llvm-instrumented job per host that has a pair; `halves` — which of
+  // llvm / rust to build at all. The workflow maps a host to a runner label.
+  const pairs = VARIANTS.filter(v => options.variantFilter === undefined || options.variantFilter.includes(v.name)).flatMap(v => v.hosts.map(host => ({ host, variant: v.name })));
+  if (pairs.length === 0) throw new Error(`--variants=${options.variantFilter?.join(",")} matches no variant`);
+  const hosts = [...new Set(pairs.map(p => p.host))].map(host => ({ host }));
+  process.stdout.write(JSON.stringify({ pairs: { include: pairs }, hosts: { include: hosts }, halves: options.halves }) + "\n");
   process.exit(0);
 }
 mkdir(options.buildDir);

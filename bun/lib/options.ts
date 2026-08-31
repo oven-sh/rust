@@ -53,8 +53,9 @@ export interface Options {
   jobs: number;
   /** The Bun build the profiles come from (lib/variants.ts): a ci-<lane> or dev. */
   variant: Variant;
-  /** `matrix` only: restrict the printed matrix to these variant names. */
+  /** `matrix` only: restrict the printed matrix to these variant names / these halves. */
   variantFilter: string[] | undefined;
+  halves: ("llvm" | "rust")[];
   /** BOLT clang and lld (lib/llvm.ts). */
   llvmBolt: boolean;
   /**
@@ -106,6 +107,7 @@ export function parseOptions(argv: string[]): Options {
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),
     variantFilter: take("variants")?.split(","),
+    halves: (h => { for (const x of h) if (x !== "llvm" && x !== "rust") throw new Error(`--halves: llvm,rust; got ${x}`); return h as ("llvm" | "rust")[]; })(take("halves")?.split(",") ?? ["llvm", "rust"]),
     jobs: Number(take("jobs") ?? availableParallelism()),
     // llvm-instrumented, matrix and probe do not depend on the variant; the default only has to exist.
     variant: findVariant(host, take("variant") ?? variantsFor(host)[0]!.name),
@@ -140,6 +142,7 @@ options:
   --jobs=N             parallelism (default: all cores)
   --variant=NAME       which Bun build to train on: ci-<os>-<arch>[-<abi>|-asan] or dev (lib/variants.ts)
   --variants=A,B       (matrix) only these variants
+  --halves=llvm,rust   (matrix) only these halves
   --skip-bolt          PGO only
   --aarch64-rust-bolt  also BOLT rustc's libraries on aarch64 (experimental; hangs in llvm-bolt 21)`);
   process.exit(2);
