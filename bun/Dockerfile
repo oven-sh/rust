@@ -3,7 +3,6 @@
 # oven-sh/WebKit's ubuntu:20.04 build container; the Bun binaries built *with* the
 # toolchain are unaffected by it.
 FROM ubuntu:20.04
-ARG LLVM=21
 ARG NODE=26.8.1
 ARG BUN=1.4.0
 ENV DEBIAN_FRONTEND=noninteractive
@@ -90,21 +89,6 @@ RUN curl -fsSL --retry 8 --retry-delay 5 \
       https://github.com/Kitware/CMake/releases/download/v${CMAKE}/cmake-${CMAKE}-linux-$(uname -m).tar.gz \
     | tar -xz -C /usr/local --strip-components=1 && cmake --version
 
-# Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt /
-# merge-fdata for the PGO/BOLT steps: apt.llvm.org's LLVM ${LLVM} for focal (LLVM's own
-# release binaries need glibc 2.34; upstream's dist image builds a clang for this).
-# Laid out as /opt/llvm/bin/{clang,clang++,clang-cl,ld.lld,llvm-*} like a release tarball
-# (clang-cl, which Bun's Windows cross configure looks for, is in clang-tools; the profile
-# runtime the PGO-instrumented builds link, libclang_rt.profile.a, in libclang-rt-dev).
-RUN curl -fsSL --retry 8 https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg \
-    && echo "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-${LLVM} main" > /etc/apt/sources.list.d/llvm.list \
-    && apt-get update && apt-get install -y --no-install-recommends clang-${LLVM} clang-tools-${LLVM} libclang-rt-${LLVM}-dev lld-${LLVM} llvm-${LLVM} bolt-${LLVM} \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/lib/llvm-${LLVM} /opt/llvm \
-    && /opt/llvm/bin/clang --version && /opt/llvm/bin/llvm-bolt --version | head -2
-# Unversioned clang/clang++/ld.lld/llvm-* on PATH, as rust's `target.*.linker=clang` expects.
-ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
-
 # GCC, for the libstdc++.a / libgcc that get statically linked into rustc's
 # libLLVM.so and librustc_driver.so (--enable-llvm-static-stdcpp). As upstream's
 # src/ci/docker/scripts/build-gcc.sh says: "-fno-reorder-blocks-and-partition is
@@ -125,8 +109,31 @@ RUN { curl -fsSL --retry 3 https://ftpmirror.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GC
     && make install >/dev/null && install -Dm644 -t /opt/gcc/share/licenses /tmp/gcc-${GCC}/COPYING3 /tmp/gcc-${GCC}/COPYING.RUNTIME \
     && cd / && rm -rf /tmp/gcc-${GCC} /tmp/gcc-build /tmp/gcc-build.log \
     && dirname "$(/opt/gcc/bin/gcc -print-file-name=libstdc++.so.6)" > /etc/ld.so.conf.d/00-opt-gcc.conf && ldconfig \
-    && ldconfig -p | grep -m1 'libstdc++.so.6 ' | grep -q /opt/gcc \
-    && printf -- '--gcc-install-dir=%s\n' "$(dirname "$(/opt/gcc/bin/gcc -print-libgcc-file-name)")" | tee /opt/llvm/bin/clang.cfg > /opt/llvm/bin/clang++.cfg \
+    && ldconfig -p | grep -m1 'libstdc++.so.6 ' | grep -q /opt/gcc
+
+# Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt / merge-fdata for
+# the PGO/BOLT steps: built from the release our src/llvm-project is based on, the way
+# upstream's src/ci/docker/scripts/build-clang.sh builds its host clang (plain Release build
+# with the image's GCC; clang, lld, bolt, compiler-rt; no tests). Same major version as the
+# LLVM being built, so profiles written by one are readable by the other. (LLVM's own release
+# binaries need glibc 2.34, and apt.llvm.org has no arm64 packages for focal from 22 on.)
+# Unlike build-clang.sh the sanitizer runtimes are kept: Bun's ASan configurations link them.
+ARG HOST_LLVM=22.1.8
+RUN mkdir /tmp/llvm && curl -fsSL --retry 8 https://github.com/llvm/llvm-project/archive/llvmorg-${HOST_LLVM}.tar.gz | tar -xz -C /tmp/llvm --strip-components=1 \
+    && cmake -G Ninja -S /tmp/llvm/llvm -B /tmp/llvm/build \
+         -DCMAKE_C_COMPILER=/opt/gcc/bin/gcc -DCMAKE_CXX_COMPILER=/opt/gcc/bin/g++ \
+         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/llvm \
+         -DLLVM_ENABLE_PROJECTS="clang;lld;bolt" -DLLVM_ENABLE_RUNTIMES=compiler-rt \
+         -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+         -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF \
+         -DCOMPILER_RT_BUILD_XRAY=OFF -DCOMPILER_RT_BUILD_MEMPROF=OFF -DCOMPILER_RT_BUILD_CTX_PROFILE=OFF -DCOMPILER_RT_BUILD_LIBFUZZER=OFF >/dev/null \
+    && { ninja -C /tmp/llvm/build install >/tmp/llvm-build.log 2>&1 || { tail -200 /tmp/llvm-build.log; exit 1; }; } \
+    && cd / && rm -rf /tmp/llvm /tmp/llvm-build.log \
+    && /opt/llvm/bin/clang --version && /opt/llvm/bin/llvm-bolt --version | head -2
+# The host clang compiles against /opt/gcc's libstdc++ (the .cfg files), and gets the NDK's
+# compiler-rt builtins/libunwind linked into its resource directory for the Android targets
+# (what bootstrap.sh install_android_ndk does for the CI image's clang).
+RUN printf -- '--gcc-install-dir=%s\n' "$(dirname "$(/opt/gcc/bin/gcc -print-libgcc-file-name)")" | tee /opt/llvm/bin/clang.cfg > /opt/llvm/bin/clang++.cfg \
     && /opt/llvm/bin/clang++ -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC installation: /opt/gcc" \
     && res=$(/opt/llvm/bin/clang -print-resource-dir) && ndk_rt=$(echo /opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/*/lib/linux) \
     && for a in aarch64 x86_64; do \
@@ -136,6 +143,8 @@ RUN { curl -fsSL --retry 3 https://ftpmirror.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GC
          ln -sf "$ndk_rt/libclang_rt.builtins-$a-android.a" "$res/lib/$a-unknown-linux-android28/libclang_rt.builtins.a"; \
          ln -sf "$ndk_rt/$a/libunwind.a" "$res/lib/$a-unknown-linux-android28/libunwind.a"; \
        done
+# Unversioned clang/clang++/ld.lld/llvm-* on PATH, as rust's `target.*.linker=clang` expects.
+ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
 
 # zstd for `llvm.libzstd=true`, built as upstream's src/ci/docker/scripts/build-zstd.sh
 # does. (Ubuntu's libzstd.a is GCC-built with hot/cold-split functions and no FILE
