@@ -396,6 +396,18 @@ fn execute_pipeline(
             print_free_disk_space()?;
 
             stage.section("Optimize LLVM and rustc with BOLT", |_| {
+                // The two rewrites side by side need several times the memory of one; where that
+                // does not fit (the aarch64 builder: the run stalled with both in flight),
+                // OPT_DIST_BOLT_SERIAL=1 does them one after the other.
+                if std::env::var_os("OPT_DIST_BOLT_SERIAL").is_some_and(|v| v == "1") {
+                    if let Some((llvm_lib, llvm_profile)) = &llvm_data {
+                        bolt_optimize(llvm_lib, llvm_profile, env)
+                            .context("Could not optimize LLVM with BOLT")?;
+                    }
+                    bolt_optimize(&rustc_lib, &rustc_profile, env)
+                        .context("Could not optimize rustc with BOLT")?;
+                    return Ok(());
+                }
                 std::thread::scope(|scope| {
                     let mut handles = vec![];
                     // Now optimize the libLLVM library with BOLT. The `libLLVM-XXX.so` library is actually hard-linked

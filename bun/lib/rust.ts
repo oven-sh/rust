@@ -98,7 +98,9 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
       "--set llvm.experimental-targets=",
       ...(boltable ? [`--set llvm.cflags=${NO_JUMP_TABLES}`, `--set llvm.cxxflags=${NO_JUMP_TABLES}`] : []),
     ],
-    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES } : {},
+    // OPT_DIST_BOLT_SERIAL: opt-dist rewrites libLLVM.so and librustc_driver.so one after the other
+    // instead of at once (with both in flight the aarch64 builder stalled: memory).
+    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES, OPT_DIST_BOLT_SERIAL: "1" } : {},
   };
 }
 

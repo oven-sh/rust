@@ -72,9 +72,12 @@ pub fn bolt_optimize(
         if env.host_tuple().starts_with("aarch64") { "profile2" } else { "cdsplit" };
 
     // Bounded: llvm-bolt has been seen not to terminate on aarch64 shared libraries; fail in
-    // OPT_DIST_BOLT_TIMEOUT (default 45m) rather than at the job's limit.
+    // OPT_DIST_BOLT_TIMEOUT (default 45m) rather than at the job's limit. The python shim reports
+    // the run's peak RSS and wall time, since memory is the suspect.
     let timeout = std::env::var("OPT_DIST_BOLT_TIMEOUT").unwrap_or_else(|_| "45m".to_string());
-    cmd(&["timeout", "--verbose", timeout.as_str(), env.llvm_bolt().as_str()])
+    const MEASURE: &str = "import resource,subprocess,sys,time;t=time.time();r=subprocess.run(sys.argv[1:]);u=resource.getrusage(resource.RUSAGE_CHILDREN);o=sys.argv[sys.argv.index('-o')+1] if '-o' in sys.argv else '?';print(f'[bolt] {o}: exit={r.returncode} wall={time.time()-t:.0f}s maxrss={u.ru_maxrss//1024}MiB',file=sys.stderr,flush=True);sys.exit(r.returncode)";
+    let update_debug_sections = std::env::var_os("OPT_DIST_BOLT_NO_DEBUG_UPDATE").is_none();
+    let mut bolt = cmd(&["python3", "-c", MEASURE, "timeout", "--verbose", "-k", "60s", timeout.as_str(), env.llvm_bolt().as_str()])
         .arg(temp_path.display())
         .arg("-data")
         .arg(&profile.0)
@@ -101,12 +104,14 @@ pub fn bolt_optimize(
         // we bump LLVM.
         // Try to reuse old text segments to reduce binary size
         // .arg("--use-old-text")
-        // Update DWARF debug info in the final binary
-        .arg("-update-debug-sections")
         // Print optimization statistics
-        .arg("-dyno-stats")
-        .run()
-        .with_context(|| anyhow::anyhow!("Could not optimize {path} with BOLT"))?;
+        .arg("-dyno-stats");
+    // Update DWARF debug info in the final binary (OPT_DIST_BOLT_NO_DEBUG_UPDATE=1 skips it, to
+    // measure its cost)
+    if update_debug_sections {
+        bolt = bolt.arg("-update-debug-sections");
+    }
+    bolt.run().with_context(|| anyhow::anyhow!("Could not optimize {path} with BOLT"))?;
 
     Ok(())
 }

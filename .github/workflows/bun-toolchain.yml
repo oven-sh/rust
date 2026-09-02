@@ -176,6 +176,7 @@ jobs:
           overwrite: true
       # The merged PGO profile the final clang was built with, for inspection (not a release asset).
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
         with:
           name: profiles-${{ matrix.host }}-${{ matrix.variant }}-llvm
           path: obj/bun-toolchain/llvm-final/clang.profdata
@@ -216,8 +217,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           overwrite: true
-      # opt-dist's merged PGO profiles (rustc, rustdoc, libLLVM) and BOLT fdata, for inspection.
+      # opt-dist's merged PGO profiles (rustc, rustdoc, libLLVM) and BOLT fdata + inputs, for
+      # inspection — also when the job failed, which is when they are wanted most.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
         with:
           name: profiles-${{ matrix.host }}-${{ matrix.variant }}-rust
           path: |
