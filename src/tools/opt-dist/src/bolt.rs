@@ -105,7 +105,11 @@ pub fn bolt_optimize(
         // Try to reuse old text segments to reduce binary size
         // .arg("--use-old-text")
         // Print optimization statistics
-        .arg("-dyno-stats");
+        .arg("-dyno-stats")
+        // Per-pass and per-rewrite-phase timers (BOLT-INFO lines at exit): free, and they say where
+        // the time went when a rewrite is slow.
+        .arg("-time-opts")
+        .arg("-time-rewrite");
     // Update DWARF debug info in the final binary (OPT_DIST_BOLT_NO_DEBUG_UPDATE=1 skips it, to
     // measure its cost)
     if update_debug_sections {

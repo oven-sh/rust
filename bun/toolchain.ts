@@ -10,6 +10,7 @@ import { buildFinal as buildLlvm, buildInstrumented as buildLlvmInstrumented } f
 import { type Command, type Options, parseOptions } from "./lib/options.ts";
 import { packageToolchain } from "./lib/package.ts";
 import { buildRust } from "./lib/rust.ts";
+import { boltLab } from "./lib/bolt-lab.ts";
 import { VARIANTS } from "./lib/variants.ts";
 import { run } from "./lib/run.ts";
 import { mkdir } from "./lib/fs.ts";
@@ -38,6 +39,7 @@ const steps: Record<Command, () => void | Promise<void>> = {
   rust: () => buildRust(options),
   package: () => { packageToolchain(options); },
   matrix: () => {},
+  "bolt-lab": () => boltLab(options, options.extra),
   all: async () => {
     buildLlvmInstrumented(options);
     await buildLlvm(options);

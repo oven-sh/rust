@@ -25,6 +25,7 @@ export const COMMANDS = {
   package: "bun-toolchain-<host>-<variant>-{llvm,rust}.tar.zst from the two installs",
   all: "every step above, in order (default)",
   probe: "print what this machine has (cores, memory, disk, host tools)",
+  "bolt-lab": "run llvm-bolt on saved opt-dist BOLT inputs with a chosen flag set (--bolt-inputs=DIR, --bolt-lib, --bolt-flags, --bolt-timeout)",
   matrix: "print the {host, variant} build matrix as JSON (for the workflow); --variants=a,b filters",
 } as const;
 export type Command = keyof typeof COMMANDS;
@@ -53,6 +54,8 @@ export interface Options {
   jobs: number;
   /** The Bun build the profiles come from (lib/variants.ts): a ci-<lane> or dev. */
   variant: Variant;
+  /** `bolt-lab` only: its --bolt-* arguments. */
+  extra: Map<string, string>;
   /** `matrix` only: restrict the printed matrix to these variant names / these halves. */
   variantFilter: string[] | undefined;
   halves: ("llvm" | "rust")[];
@@ -107,6 +110,7 @@ export function parseOptions(argv: string[]): Options {
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),
     variantFilter: take("variants")?.split(","),
+    extra: new Map([...args].filter(([k]) => k.startsWith("bolt-"))),
     halves: (h => { for (const x of h) if (x !== "llvm" && x !== "rust") throw new Error(`--halves: llvm,rust; got ${x}`); return h as ("llvm" | "rust")[]; })(take("halves")?.split(",") ?? ["llvm", "rust"]),
     jobs: Number(take("jobs") ?? availableParallelism()),
     // llvm-instrumented, matrix and probe do not depend on the variant; the default only has to exist.
@@ -115,6 +119,7 @@ export function parseOptions(argv: string[]): Options {
     rustBolt: false,
   };
   options.rustBolt = options.llvmBolt && (options.host !== "linux-aarch64" || take("aarch64-rust-bolt") !== undefined);
+  for (const k of [...args.keys()]) if (k.startsWith("bolt-")) args.delete(k);
   if (args.size > 0) {
     console.error(`unknown option(s): ${[...args.keys()].map(k => `--${k}`).join(", ")}`);
     usage();
