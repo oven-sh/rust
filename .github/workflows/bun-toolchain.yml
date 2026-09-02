@@ -31,6 +31,9 @@ on:
       skip-bolt:
         type: boolean
         default: false
+      extra-args:
+        description: extra bun/toolchain.ts options for every job (e.g. --aarch64-rust-bolt)
+        required: false
   push:
     branches: ["nightly-*-bun"]
     paths: ["bun/**", "!bun/README.md", ".github/workflows/bun-toolchain.yml", "src/tools/opt-dist/**", "src/llvm-project"]
@@ -44,7 +47,7 @@ permissions:
   packages: read
 
 env:
-  TOOLCHAIN_ARGS: ${{ inputs.bun-ref && format('--bun-ref={0}', inputs.bun-ref) || '' }} ${{ inputs.skip-bolt && '--skip-bolt' || '' }}
+  TOOLCHAIN_ARGS: ${{ inputs.bun-ref && format('--bun-ref={0}', inputs.bun-ref) || '' }} ${{ inputs.skip-bolt && '--skip-bolt' || '' }} ${{ inputs.extra-args }}
   # bun/Dockerfile, built once per Dockerfile change and kept in GHCR; jobs append :<dockerfile hash>-<host>.
   IMAGE: ghcr.io/${{ github.repository_owner }}/bun-toolchain-env
   # As the runner's user, so the checkout is trusted by git and outputs are owned by the steps
@@ -220,6 +223,7 @@ jobs:
           path: |
             obj/bun-toolchain/rust/opt-artifacts/*.profdata
             obj/bun-toolchain/rust/opt-artifacts/*.fdata
+            obj/bun-toolchain/rust/opt-artifacts/bolt-inputs/*
           if-no-files-found: warn
           retention-days: 14
           overwrite: true

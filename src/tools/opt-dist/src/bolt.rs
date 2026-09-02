@@ -58,11 +58,23 @@ pub fn bolt_optimize(
     let temp_path = tempfile::NamedTempFile::new()?.into_temp_path();
     copy_file(path, &temp_path)?;
 
+    // Keep the inputs of this step (the pre-BOLT library and its merged profile) with the other
+    // opt-artifacts, so a slow or failing llvm-bolt run can be reproduced without redoing the
+    // hours before it.
+    let inputs_dir = env.artifact_dir().join("bolt-inputs");
+    std::fs::create_dir_all(&inputs_dir)?;
+    let file_name = path.file_name().expect("BOLT input has a file name");
+    copy_file(path, &inputs_dir.join(file_name))?;
+    copy_file(&profile.0, &inputs_dir.join(format!("{file_name}.fdata")))?;
+
     // FIXME: cdsplit in llvm-bolt is currently broken on AArch64, drop this once it's fixed upstream
     let split_strategy =
         if env.host_tuple().starts_with("aarch64") { "profile2" } else { "cdsplit" };
 
-    cmd(&[env.llvm_bolt().as_str()])
+    // Bounded: llvm-bolt has been seen not to terminate on aarch64 shared libraries; fail in
+    // OPT_DIST_BOLT_TIMEOUT (default 45m) rather than at the job's limit.
+    let timeout = std::env::var("OPT_DIST_BOLT_TIMEOUT").unwrap_or_else(|_| "45m".to_string());
+    cmd(&["timeout", "--verbose", timeout.as_str(), env.llvm_bolt().as_str()])
         .arg(temp_path.display())
         .arg("-data")
         .arg(&profile.0)

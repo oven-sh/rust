@@ -144,7 +144,7 @@ options:
   --variants=A,B       (matrix) only these variants
   --halves=llvm,rust   (matrix) only these halves
   --skip-bolt          PGO only
-  --aarch64-rust-bolt  also BOLT rustc's libraries on aarch64 (experimental; hangs in llvm-bolt 21)`);
+  --aarch64-rust-bolt  also BOLT rustc's libraries on aarch64 (experimental; llvm-bolt 21 hung on them)`);
   process.exit(2);
 }
 
