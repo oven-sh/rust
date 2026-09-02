@@ -75,9 +75,42 @@ pub fn bolt_optimize(
     // OPT_DIST_BOLT_TIMEOUT (default 45m) rather than at the job's limit. The python shim reports
     // the run's peak RSS and wall time, since memory is the suspect.
     let timeout = std::env::var("OPT_DIST_BOLT_TIMEOUT").unwrap_or_else(|_| "45m".to_string());
+    // OPT_DIST_BOLT_MEM_LIMIT (bytes of address space, via prlimit): make a runaway rewrite fail
+    // with ENOMEM instead of taking the machine down with it. Unset = unlimited.
+    let mem_limit = std::env::var("OPT_DIST_BOLT_MEM_LIMIT").ok();
     const MEASURE: &str = "import resource,subprocess,sys,time;t=time.time();r=subprocess.run(sys.argv[1:]);u=resource.getrusage(resource.RUSAGE_CHILDREN);o=sys.argv[sys.argv.index('-o')+1] if '-o' in sys.argv else '?';print(f'[bolt] {o}: exit={r.returncode} wall={time.time()-t:.0f}s maxrss={u.ru_maxrss//1024}MiB',file=sys.stderr,flush=True);sys.exit(r.returncode)";
     let update_debug_sections = std::env::var_os("OPT_DIST_BOLT_NO_DEBUG_UPDATE").is_none();
-    let mut bolt = cmd(&["python3", "-c", MEASURE, "timeout", "--verbose", "-k", "60s", timeout.as_str(), env.llvm_bolt().as_str()])
+    // While it runs, a sampler logs memory and the llvm-bolt process state every 30 s, so a
+    // stall shows up in the log with numbers next to it.
+    const SAMPLER: &str = r#"
+import os, time, sys
+def meminfo():
+    m = {l.split(':')[0]: int(l.split()[1]) // 1024 for l in open('/proc/meminfo')}
+    return f"used={m['MemTotal']-m['MemAvailable']}M avail={m['MemAvailable']}M swap_used={m['SwapTotal']-m['SwapFree']}M"
+def bolts():
+    out = []
+    for pid in os.listdir('/proc'):
+        if not pid.isdigit(): continue
+        try:
+            if os.readlink(f'/proc/{pid}/exe').rsplit('/', 1)[-1] != 'llvm-bolt': continue
+            st = {l.split(':')[0]: l.split(':', 1)[1].strip() for l in open(f'/proc/{pid}/status')}
+            stat = open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()
+            wchan = open(f'/proc/{pid}/wchan').read() or '-'
+            out.append(f"pid={pid} state={st['State']} rss={int(st['VmRSS'].split()[0])//1024}M hwm={int(st['VmHWM'].split()[0])//1024}M threads={st['Threads']} utime={int(stat[11])//100}s stime={int(stat[12])//100}s wchan={wchan}")
+        except (OSError, KeyError): pass
+    return ' | '.join(out) or 'no llvm-bolt process'
+while True:
+    time.sleep(30)
+    print(f"[bolt-sample] {time.strftime('%H:%M:%S', time.gmtime())} {meminfo()} :: {bolts()}", file=sys.stderr, flush=True)
+"#;
+    let mut sampler = std::process::Command::new("python3").arg("-c").arg(SAMPLER).spawn().ok();
+    let mut argv: Vec<String> = vec!["python3".into(), "-c".into(), MEASURE.into()];
+    if let Some(limit) = &mem_limit {
+        argv.extend(["prlimit".into(), format!("--as={limit}")]);
+    }
+    argv.extend(["timeout".into(), "--verbose".into(), "-k".into(), "60s".into(), timeout.clone(), env.llvm_bolt().to_string()]);
+    let argv_ref: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let mut bolt = cmd(&argv_ref)
         .arg(temp_path.display())
         .arg("-data")
         .arg(&profile.0)
@@ -115,7 +148,15 @@ pub fn bolt_optimize(
     if update_debug_sections {
         bolt = bolt.arg("-update-debug-sections");
     }
-    bolt.run().with_context(|| anyhow::anyhow!("Could not optimize {path} with BOLT"))?;
+    if std::env::var_os("OPT_DIST_BOLT_VERBOSE").is_some() {
+        bolt = bolt.arg("-v=1");
+    }
+    let result = bolt.run().with_context(|| anyhow::anyhow!("Could not optimize {path} with BOLT"));
+    if let Some(s) = sampler.as_mut() {
+        let _ = s.kill();
+        let _ = s.wait();
+    }
+    result?;
 
     Ok(())
 }

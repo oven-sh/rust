@@ -100,7 +100,10 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
     ],
     // OPT_DIST_BOLT_SERIAL: opt-dist rewrites libLLVM.so and librustc_driver.so one after the other
     // instead of at once (with both in flight the aarch64 builder stalled: memory).
-    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES, OPT_DIST_BOLT_SERIAL: "1" } : {},
+    // OPT_DIST_BOLT_MEM_LIMIT: cap each rewrite's address space (40 GiB of the builder's 64) so a
+    // runaway one fails instead of stalling the machine; OPT_DIST_BOLT_VERBOSE while this is being
+    // debugged.
+    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES, OPT_DIST_BOLT_SERIAL: "1", OPT_DIST_BOLT_MEM_LIMIT: String(40 * 2 ** 30), OPT_DIST_BOLT_VERBOSE: "1" } : {},
   };
 }
 

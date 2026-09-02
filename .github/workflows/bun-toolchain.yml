@@ -192,7 +192,9 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
     name: rust ${{ matrix.variant }} (${{ matrix.host }})
     runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
-    timeout-minutes: 360
+    # A healthy job is under 2h30 (x86_64 with BOLT ~1h30, aarch64 ~1h25, +~40 min with BOLT); past
+    # that it is stuck, and timing out (unlike cancelling) still runs the artifact uploads below.
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with: { submodules: false, fetch-depth: 1 }
