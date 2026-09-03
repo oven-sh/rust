@@ -86,7 +86,21 @@ pub fn bolt_optimize(
     // OPT_DIST_BOLT_MEM_LIMIT (bytes of address space, via prlimit): make a runaway rewrite fail
     // with ENOMEM instead of taking the machine down with it. Unset = unlimited.
     let mem_limit = std::env::var("OPT_DIST_BOLT_MEM_LIMIT").ok();
-    const MEASURE: &str = "import resource,subprocess,sys,time;t=time.time();r=subprocess.run(sys.argv[1:]);u=resource.getrusage(resource.RUSAGE_CHILDREN);o=sys.argv[sys.argv.index('-o')+1] if '-o' in sys.argv else '?';print(f'[bolt] {o}: exit={r.returncode} wall={time.time()-t:.0f}s maxrss={u.ru_maxrss//1024}MiB',file=sys.stderr,flush=True);sys.exit(r.returncode)";
+    const MEASURE: &str = r#"
+import resource, subprocess, sys, time, os
+o = sys.argv[sys.argv.index('-o') + 1] if '-o' in sys.argv else '?'
+log = os.environ['OPT_DIST_BOLT_LOG']
+t = time.time()
+# llvm-bolt's own output goes to a file, not the job's log pipe: if it floods, nothing blocks, and
+# the file says what it printed.
+with open(log, 'wb') as f:
+    r = subprocess.run(sys.argv[1:], stdout=f, stderr=subprocess.STDOUT)
+u = resource.getrusage(resource.RUSAGE_CHILDREN)
+lines = sum(1 for _ in open(log, 'rb'))
+print(f'[bolt] {o}: exit={r.returncode} wall={time.time()-t:.0f}s maxrss={u.ru_maxrss//1024}MiB output={lines} lines in {log}', file=sys.stderr, flush=True)
+os.system(f"grep -v 'BOLT-INFO: (Starting|Finished) pass' -E {log} | tail -60 >&2")
+sys.exit(r.returncode)
+"#;
     let update_debug_sections = std::env::var_os("OPT_DIST_BOLT_NO_DEBUG_UPDATE").is_none();
     // While it runs, a sampler logs memory and the llvm-bolt process state every 30 s, so a
     // stall shows up in the log with numbers next to it.
@@ -107,11 +121,15 @@ def bolts():
             out.append(f"pid={pid} state={st['State']} rss={int(st['VmRSS'].split()[0])//1024}M hwm={int(st['VmHWM'].split()[0])//1024}M threads={st['Threads']} utime={int(stat[11])//100}s stime={int(stat[12])//100}s wchan={wchan}")
         except (OSError, KeyError): pass
     return ' | '.join(out) or 'no llvm-bolt process'
+log = open(os.environ['OPT_DIST_BOLT_LOG'] + '.samples', 'a')
 while True:
-    time.sleep(30)
-    print(f"[bolt-sample] {time.strftime('%H:%M:%S', time.gmtime())} {meminfo()} :: {bolts()}", file=sys.stderr, flush=True)
+    time.sleep(10)
+    line = f"[bolt-sample] {time.strftime('%H:%M:%S', time.gmtime())} {meminfo()} :: {bolts()}"
+    print(line, file=log, flush=True)
+    print(line, file=sys.stderr, flush=True)
 "#;
-    let mut sampler = std::process::Command::new("python3").arg("-c").arg(SAMPLER).spawn().ok();
+    let bolt_log = inputs_dir.join(format!("{file_name}.bolt.log"));
+    let mut sampler = std::process::Command::new("python3").arg("-c").arg(SAMPLER).env("OPT_DIST_BOLT_LOG", bolt_log.as_str()).spawn().ok();
     let mut argv: Vec<String> = vec!["python3".into(), "-c".into(), MEASURE.into()];
     if let Some(limit) = &mem_limit {
         argv.extend(["prlimit".into(), format!("--as={limit}")]);
@@ -119,6 +137,7 @@ while True:
     argv.extend(["timeout".into(), "--verbose".into(), "-k".into(), "60s".into(), timeout.clone(), env.llvm_bolt().to_string()]);
     let argv_ref: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut bolt = cmd(&argv_ref)
+        .env("OPT_DIST_BOLT_LOG", bolt_log.as_str())
         .arg(temp_path.display())
         .arg("-data")
         .arg(&profile.0)
