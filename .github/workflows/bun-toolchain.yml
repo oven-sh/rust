@@ -34,6 +34,9 @@ on:
       extra-args:
         description: extra bun/toolchain.ts options for every job (e.g. --aarch64-rust-bolt)
         required: false
+      bolt-lab:
+        description: "instead of building: the run id whose profiles-<host>-<variant>-rust artifact (bolt-inputs) `toolchain.ts bolt-lab` should run on, with extra-args (e.g. --bolt-flags=no-split --bolt-lib=libLLVM)"
+        required: false
   push:
     branches: ["nightly-*-bun"]
     paths: ["bun/**", "!bun/README.md", ".github/workflows/bun-toolchain.yml", "src/tools/opt-dist/**", "src/llvm-project"]
@@ -110,9 +113,40 @@ jobs:
             gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions/$id" || true
           done
 
+  # Dispatch-only: rerun llvm-bolt on a previous run's saved BOLT inputs (see bun/lib/bolt-lab.ts).
+  bolt-lab:
+    needs: [plan, image]
+    if: inputs.bolt-lab != ''
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    name: bolt-lab ${{ matrix.variant }} (${{ matrix.host }})
+    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { submodules: false, fetch-depth: 1 }
+      - name: Container image
+        run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: "profiles-${{ matrix.host }}-${{ matrix.variant }}-rust", path: obj/bolt-inputs, run-id: "${{ inputs.bolt-lab }}", github-token: "${{ github.token }}" }
+      - name: llvm-bolt on saved inputs
+        run: |
+          mkdir -p obj/home && GID=$(id -g) && ls -laR obj/bolt-inputs
+          eval "$IN_CONTAINER node bun/toolchain.ts bolt-lab --bolt-inputs=/checkout/obj/bolt-inputs/bolt-inputs $TOOLCHAIN_ARGS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: bolt-lab-${{ matrix.host }}-${{ matrix.variant }}
+          path: obj/bolt-inputs/**/*.bolted
+          if-no-files-found: warn
+          retention-days: 7
+
   llvm-instrumented:
     needs: [plan, image]
-    if: needs.plan.outputs.llvm == 'true'
+    if: needs.plan.outputs.llvm == 'true' && !inputs.bolt-lab
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
@@ -186,7 +220,7 @@ jobs:
 
   rust:
     needs: [plan, image]
-    if: needs.plan.outputs.rust == 'true'
+    if: needs.plan.outputs.rust == 'true' && !inputs.bolt-lab
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}

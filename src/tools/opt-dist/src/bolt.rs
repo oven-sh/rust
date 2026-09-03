@@ -19,6 +19,14 @@ pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
     // instrumentation.
     let _backup_file = BackedUpFile::new(path)?;
 
+    // Keep the pre-BOLT library (and below, the instrumented one) with the other opt-artifacts
+    // before anything runs it, so a crash or stall from here on can be reproduced from the
+    // uploaded inputs alone.
+    let inputs_dir = env.artifact_dir().join("bolt-inputs");
+    std::fs::create_dir_all(&inputs_dir)?;
+    let file_name = path.file_name().expect("BOLT input has a file name");
+    copy_file(path, &inputs_dir.join(file_name))?;
+
     let instrumented_path = tempfile::NamedTempFile::new()?.into_temp_path();
 
     let profile_dir =
@@ -40,6 +48,7 @@ pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
 
     // Copy the instrumented artifact over the original one
     copy_file(&instrumented_path, path)?;
+    copy_file(&instrumented_path, &inputs_dir.join(format!("{file_name}.instrumented")))?;
 
     // Run the function that will make use of the instrumented artifact.
     // The original file will be restored when `_backup_file` is dropped.
@@ -64,7 +73,6 @@ pub fn bolt_optimize(
     let inputs_dir = env.artifact_dir().join("bolt-inputs");
     std::fs::create_dir_all(&inputs_dir)?;
     let file_name = path.file_name().expect("BOLT input has a file name");
-    copy_file(path, &inputs_dir.join(file_name))?;
     copy_file(&profile.0, &inputs_dir.join(format!("{file_name}.fdata")))?;
 
     // FIXME: cdsplit in llvm-bolt is currently broken on AArch64, drop this once it's fixed upstream

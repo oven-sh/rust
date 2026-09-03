@@ -4,9 +4,11 @@
 // pipeline run, which library / pass / option makes the aarch64 rewrite stall.
 //
 //   toolchain.ts bolt-lab --bolt-inputs=DIR [--bolt-lib=libLLVM|librustc_driver|all]
-//                          [--bolt-flags=opt-dist|minimal|"<flags>"] [--bolt-timeout=45m]
+//                          [--bolt-flags=opt-dist|no-debug-update|no-split|lite|minimal|"<flags>"]
+//                          [--bolt-timeout=45m] [--bolt-binary=/path/to/llvm-bolt]
 
 import { readdirSync } from "node:fs";
+import { exists } from "./fs.ts";
 import { join } from "node:path";
 import type { Options } from "./options.ts";
 import { run } from "./run.ts";
@@ -27,12 +29,15 @@ export function boltLab(o: Options, args: Map<string, string>): void {
   const flagArg = args.get("bolt-flags") ?? "opt-dist";
   const flags = FLAG_SETS[flagArg] ?? flagArg.split(/\s+/);
   const timeout = args.get("bolt-timeout") ?? "45m";
-  const libs = readdirSync(dir).filter(f => f.endsWith(".so") || /\.so\.[\d.]+-rust/.test(f)).filter(f => !f.endsWith(".fdata"));
+  const libs = readdirSync(dir).filter(f => /^lib(LLVM|rustc_driver).*\.so/.test(f) && !/\.(fdata|instrumented|bolted)$/.test(f));
+  const llvmBolt = args.get("bolt-binary") ?? join(o.hostLlvm, "bin", "llvm-bolt");
   const measure = "import resource,subprocess,sys,time;t=time.time();r=subprocess.run(sys.argv[1:]);u=resource.getrusage(resource.RUSAGE_CHILDREN);print(f'[bolt-lab] exit={r.returncode} wall={time.time()-t:.0f}s maxrss={u.ru_maxrss//1024}MiB',file=sys.stderr,flush=True);sys.exit(0)";
   for (const lib of libs) {
     if (which !== "all" && !lib.startsWith(which)) continue;
-    const fdata = join(dir, `${lib}.fdata`);
+    // opt-dist names the merged profiles LLVM-bolt.profdata / rustc-bolt.profdata (BOLT fdata despite the name)
+    const fdata = [join(dir, `${lib}.fdata`), join(dir, lib.startsWith("libLLVM") ? "LLVM-bolt.profdata" : "rustc-bolt.profdata"), join(dir, "..", lib.startsWith("libLLVM") ? "LLVM-bolt.profdata" : "rustc-bolt.profdata")].find(exists);
+    if (fdata === undefined) throw new Error(`no BOLT profile for ${lib} in ${dir}`);
     console.log(`\n=== bolt-lab: ${lib}  flags=${flagArg}  timeout=${timeout}`);
-    run(["python3", "-c", measure, "timeout", "--verbose", "-k", "60s", timeout, join(o.hostLlvm, "bin", "llvm-bolt"), join(dir, lib), "-data", fdata, "-o", join(dir, `${lib}.bolted`), "-time-rewrite", "-time-opts", ...flags]);
+    run(["python3", "-c", measure, "timeout", "--verbose", "-k", "60s", timeout, llvmBolt, join(dir, lib), "-data", fdata, "-o", join(dir, `${lib}.bolted`), "-time-rewrite", "-time-opts", ...flags]);
   }
 }
