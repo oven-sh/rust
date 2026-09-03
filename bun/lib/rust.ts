@@ -12,7 +12,7 @@
 
 import { chmodSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { exists, isDone, markDone, mkdir, remove } from "./fs.ts";
+import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
 import { NO_JUMP_TABLES } from "./llvm.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
@@ -103,7 +103,10 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
       "--set rust.compress-debuginfo=off",
       ...(boltable ? [`--set llvm.cflags=${NO_JUMP_TABLES}`, `--set llvm.cxxflags=${NO_JUMP_TABLES}`] : []),
     ],
-    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES } : {},
+    // OPT_DIST_BOLT_SAVE_INPUTS: keep each library's pre-BOLT and BOLT-instrumented copies with the
+    // uploaded opt-artifacts while an intermittent crash of the instrumented aarch64
+    // librustc_driver.so (in rustc_session's CheckCfg::fill_well_known) is being root-caused.
+    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES, OPT_DIST_BOLT_SAVE_INPUTS: "1" } : {},
   };
 }
 
@@ -182,7 +185,46 @@ export function buildRust(o: Options): void {
 
   // 4. install the dist tarballs; that directory is what `package` ships.
   installDist(o);
+  // 5. run what was installed. opt-dist BOLTs the stage2 libraries in place and dist packages
+  //    them without executing them again (upstream then runs part of the test suite, which we
+  //    skip), so this is the first time the shipped rustc runs: a BOLT rewrite that produced a
+  //    broken librustc_driver.so must fail here, not in Bun's CI.
+  smokeTest(o);
   markDone(p.rustInstall, key);
+}
+
+/** Compile and run a small program, and build a small cargo project, with the installed toolchain. */
+export function smokeTest(o: Options): void {
+  const p = paths(o);
+  const dir = join(p.train, "smoke");
+  remove(dir);
+  mkdir(join(dir, "src"));
+  const rustc = join(p.rustInstall, "bin", "rustc");
+  const cargo = join(p.rustInstall, "bin", "cargo");
+  console.log(run([rustc, "-vV"], { capture: true }).trim());
+  write(
+    join(dir, "hello.rs"),
+    `use std::collections::HashMap;
+fn main() {
+    let mut m: HashMap<String, usize> = HashMap::new();
+    for (i, w) in "the installed rustc compiled and ran this program".split(' ').enumerate() { m.insert(w.to_string(), i); }
+    let mut v: Vec<_> = m.iter().collect();
+    v.sort_by_key(|(_, i)| **i);
+    println!("{}", v.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>().join(" "));
+}
+`,
+  );
+  for (const opt of ["0", "3"]) {
+    run([rustc, "--edition=2021", `-Copt-level=${opt}`, "-Cdebuginfo=1", "hello.rs", "-o", `hello${opt}`], { cwd: dir });
+    const out = run([join(dir, `hello${opt}`)], { capture: true }).trim();
+    if (out !== "the installed rustc compiled and ran this program") throw new Error(`smoke test: unexpected output ${JSON.stringify(out)}`);
+  }
+  write(join(dir, "Cargo.toml"), `[package]\nname = "smoke"\nversion = "0.0.0"\nedition = "2021"\n[profile.release]\nlto = "thin"\ncodegen-units = 4\n`);
+  write(join(dir, "src", "main.rs"), `fn main() { println!("{}", (1..=10u64).product::<u64>()); }\n`);
+  run([cargo, "build", "--release", "--quiet"], { cwd: dir, env: { RUSTC: rustc, CARGO_TARGET_DIR: join(dir, "target") } });
+  const out = run([join(dir, "target", "release", "smoke")], { capture: true }).trim();
+  if (out !== "3628800") throw new Error(`smoke test: unexpected cargo build output ${JSON.stringify(out)}`);
+  console.log("smoke test: installed rustc and cargo work");
 }
 
 export function installDist(o: Options): void {

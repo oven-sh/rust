@@ -120,7 +120,7 @@ RUN { curl -fsSL --retry 3 https://ftpmirror.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GC
 # 2.34, and apt.llvm.org has no arm64 packages for focal from 22 on.)
 # Unlike build-clang.sh the sanitizer runtimes are kept: Bun's ASan configurations link them.
 # Bump together with the submodule when a host-tool fix lands there.
-ARG HOST_LLVM=fc7c395b9c5482ec64c5727037bd682e903d37d0
+ARG HOST_LLVM=16d3077c6d316d3764775d77f53d937559594f3e
 RUN mkdir /tmp/llvm && curl -fsSL --retry 8 https://github.com/oven-sh/llvm-project/archive/${HOST_LLVM}.tar.gz | tar -xz -C /tmp/llvm --strip-components=1 \
     && cmake -G Ninja -S /tmp/llvm/llvm -B /tmp/llvm/build \
          -DCMAKE_C_COMPILER=/opt/gcc/bin/gcc -DCMAKE_CXX_COMPILER=/opt/gcc/bin/g++ \
