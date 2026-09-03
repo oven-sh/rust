@@ -6,6 +6,18 @@ use crate::exec::cmd;
 use crate::training::BoltProfile;
 use crate::utils::io::copy_file;
 
+/// Where BOLT inputs are kept for offline reproduction when OPT_DIST_BOLT_SAVE_INPUTS is set:
+/// the pre-BOLT library, its instrumented version and (at optimize time) its merged profile,
+/// next to the other opt-artifacts. Off by default: they are several hundred MiB each.
+fn saved_inputs_dir(env: &Environment) -> anyhow::Result<Option<Utf8PathBuf>> {
+    if std::env::var_os("OPT_DIST_BOLT_SAVE_INPUTS").is_none() {
+        return Ok(None);
+    }
+    let dir = env.artifact_dir().join("bolt-inputs");
+    std::fs::create_dir_all(&dir)?;
+    Ok(Some(dir))
+}
+
 /// Instruments an artifact at the given `path` (in-place) with BOLT and then calls `func`.
 /// After this function finishes, the original file will be restored.
 pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
@@ -19,13 +31,11 @@ pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
     // instrumentation.
     let _backup_file = BackedUpFile::new(path)?;
 
-    // Keep the pre-BOLT library (and below, the instrumented one) with the other opt-artifacts
-    // before anything runs it, so a crash or stall from here on can be reproduced from the
-    // uploaded inputs alone.
-    let inputs_dir = env.artifact_dir().join("bolt-inputs");
-    std::fs::create_dir_all(&inputs_dir)?;
     let file_name = path.file_name().expect("BOLT input has a file name");
-    copy_file(path, &inputs_dir.join(file_name))?;
+    let inputs_dir = saved_inputs_dir(env)?;
+    if let Some(dir) = &inputs_dir {
+        copy_file(path, &dir.join(file_name))?;
+    }
 
     let instrumented_path = tempfile::NamedTempFile::new()?.into_temp_path();
 
@@ -48,7 +58,9 @@ pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
 
     // Copy the instrumented artifact over the original one
     copy_file(&instrumented_path, path)?;
-    copy_file(&instrumented_path, &inputs_dir.join(format!("{file_name}.instrumented")))?;
+    if let Some(dir) = &inputs_dir {
+        copy_file(&instrumented_path, &dir.join(format!("{file_name}.instrumented")))?;
+    }
 
     // Run the function that will make use of the instrumented artifact.
     // The original file will be restored when `_backup_file` is dropped.
@@ -67,77 +79,34 @@ pub fn bolt_optimize(
     let temp_path = tempfile::NamedTempFile::new()?.into_temp_path();
     copy_file(path, &temp_path)?;
 
-    // Keep the inputs of this step (the pre-BOLT library and its merged profile) with the other
-    // opt-artifacts, so a slow or failing llvm-bolt run can be reproduced without redoing the
-    // hours before it.
-    let inputs_dir = env.artifact_dir().join("bolt-inputs");
-    std::fs::create_dir_all(&inputs_dir)?;
     let file_name = path.file_name().expect("BOLT input has a file name");
-    copy_file(&profile.0, &inputs_dir.join(format!("{file_name}.fdata")))?;
+    if let Some(dir) = saved_inputs_dir(env)? {
+        copy_file(&profile.0, &dir.join(format!("{file_name}.fdata")))?;
+    }
 
     // FIXME: cdsplit in llvm-bolt is currently broken on AArch64, drop this once it's fixed upstream
     let split_strategy =
         if env.host_tuple().starts_with("aarch64") { "profile2" } else { "cdsplit" };
 
-    // Bounded: llvm-bolt has been seen not to terminate on aarch64 shared libraries; fail in
-    // OPT_DIST_BOLT_TIMEOUT (default 45m) rather than at the job's limit. The python shim reports
-    // the run's peak RSS and wall time, since memory is the suspect.
+    // llvm-bolt's output goes to a file next to the opt-artifacts and only a summary (exit status,
+    // wall time, peak RSS, line count) plus its tail reach the build log: an llvm-bolt that printed
+    // one error in an endless loop once filled the CI log pipe and stalled the whole builder with
+    // it. The run is also bounded by OPT_DIST_BOLT_TIMEOUT (default 45m; x86_64 takes ~2 min,
+    // aarch64 ~3).
+    let log = env.artifact_dir().join(format!("{file_name}.bolt.log"));
     let timeout = std::env::var("OPT_DIST_BOLT_TIMEOUT").unwrap_or_else(|_| "45m".to_string());
-    // OPT_DIST_BOLT_MEM_LIMIT (bytes of address space, via prlimit): make a runaway rewrite fail
-    // with ENOMEM instead of taking the machine down with it. Unset = unlimited.
-    let mem_limit = std::env::var("OPT_DIST_BOLT_MEM_LIMIT").ok();
-    const MEASURE: &str = r#"
-import resource, subprocess, sys, time, os
-o = sys.argv[sys.argv.index('-o') + 1] if '-o' in sys.argv else '?'
-log = os.environ['OPT_DIST_BOLT_LOG']
+    const RUN_LOGGED: &str = r#"
+import os, resource, subprocess, sys, time
+log, argv = sys.argv[1], sys.argv[2:]
 t = time.time()
-# llvm-bolt's own output goes to a file, not the job's log pipe: if it floods, nothing blocks, and
-# the file says what it printed.
 with open(log, 'wb') as f:
-    r = subprocess.run(sys.argv[1:], stdout=f, stderr=subprocess.STDOUT)
+    r = subprocess.run(argv, stdout=f, stderr=subprocess.STDOUT)
 u = resource.getrusage(resource.RUSAGE_CHILDREN)
-lines = sum(1 for _ in open(log, 'rb'))
-print(f'[bolt] {o}: exit={r.returncode} wall={time.time()-t:.0f}s maxrss={u.ru_maxrss//1024}MiB output={lines} lines in {log}', file=sys.stderr, flush=True)
-os.system(f"grep -v 'BOLT-INFO: (Starting|Finished) pass' -E {log} | tail -60 >&2")
+print(f'[bolt] {argv[-1] if "-o" not in argv else argv[argv.index("-o") + 1]}: exit={r.returncode} wall={time.time()-t:.0f}s maxrss={u.ru_maxrss//1024}MiB, {os.path.getsize(log)} bytes of output in {log}', file=sys.stderr, flush=True)
+os.system(f"tail -c 200000 {log} | grep -v -E 'BOLT-INFO: (Starting|Finished) pass' | tail -60 >&2")
 sys.exit(r.returncode)
 "#;
-    let update_debug_sections = std::env::var_os("OPT_DIST_BOLT_NO_DEBUG_UPDATE").is_none();
-    // While it runs, a sampler logs memory and the llvm-bolt process state every 30 s, so a
-    // stall shows up in the log with numbers next to it.
-    const SAMPLER: &str = r#"
-import os, time, sys
-def meminfo():
-    m = {l.split(':')[0]: int(l.split()[1]) // 1024 for l in open('/proc/meminfo')}
-    return f"used={m['MemTotal']-m['MemAvailable']}M avail={m['MemAvailable']}M swap_used={m['SwapTotal']-m['SwapFree']}M"
-def bolts():
-    out = []
-    for pid in os.listdir('/proc'):
-        if not pid.isdigit(): continue
-        try:
-            if os.readlink(f'/proc/{pid}/exe').rsplit('/', 1)[-1] != 'llvm-bolt': continue
-            st = {l.split(':')[0]: l.split(':', 1)[1].strip() for l in open(f'/proc/{pid}/status')}
-            stat = open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()
-            wchan = open(f'/proc/{pid}/wchan').read() or '-'
-            out.append(f"pid={pid} state={st['State']} rss={int(st['VmRSS'].split()[0])//1024}M hwm={int(st['VmHWM'].split()[0])//1024}M threads={st['Threads']} utime={int(stat[11])//100}s stime={int(stat[12])//100}s wchan={wchan}")
-        except (OSError, KeyError): pass
-    return ' | '.join(out) or 'no llvm-bolt process'
-log = open(os.environ['OPT_DIST_BOLT_LOG'] + '.samples', 'a')
-while True:
-    time.sleep(10)
-    line = f"[bolt-sample] {time.strftime('%H:%M:%S', time.gmtime())} {meminfo()} :: {bolts()}"
-    print(line, file=log, flush=True)
-    print(line, file=sys.stderr, flush=True)
-"#;
-    let bolt_log = inputs_dir.join(format!("{file_name}.bolt.log"));
-    let mut sampler = std::process::Command::new("python3").arg("-c").arg(SAMPLER).env("OPT_DIST_BOLT_LOG", bolt_log.as_str()).spawn().ok();
-    let mut argv: Vec<String> = vec!["python3".into(), "-c".into(), MEASURE.into()];
-    if let Some(limit) = &mem_limit {
-        argv.extend(["prlimit".into(), format!("--as={limit}")]);
-    }
-    argv.extend(["timeout".into(), "--verbose".into(), "-k".into(), "60s".into(), timeout.clone(), env.llvm_bolt().to_string()]);
-    let argv_ref: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let mut bolt = cmd(&argv_ref)
-        .env("OPT_DIST_BOLT_LOG", bolt_log.as_str())
+    cmd(&["python3", "-c", RUN_LOGGED, log.as_str(), "timeout", "--verbose", "-k", "60s", timeout.as_str(), env.llvm_bolt().as_str()])
         .arg(temp_path.display())
         .arg("-data")
         .arg(&profile.0)
@@ -164,26 +133,15 @@ while True:
         // we bump LLVM.
         // Try to reuse old text segments to reduce binary size
         // .arg("--use-old-text")
+        // Update DWARF debug info in the final binary
+        .arg("-update-debug-sections")
         // Print optimization statistics
         .arg("-dyno-stats")
-        // Per-pass and per-rewrite-phase timers (BOLT-INFO lines at exit): free, and they say where
-        // the time went when a rewrite is slow.
+        // Per-pass and per-phase timers
         .arg("-time-opts")
-        .arg("-time-rewrite");
-    // Update DWARF debug info in the final binary (OPT_DIST_BOLT_NO_DEBUG_UPDATE=1 skips it, to
-    // measure its cost)
-    if update_debug_sections {
-        bolt = bolt.arg("-update-debug-sections");
-    }
-    if std::env::var_os("OPT_DIST_BOLT_VERBOSE").is_some() {
-        bolt = bolt.arg("-v=1");
-    }
-    let result = bolt.run().with_context(|| anyhow::anyhow!("Could not optimize {path} with BOLT"));
-    if let Some(s) = sampler.as_mut() {
-        let _ = s.kill();
-        let _ = s.wait();
-    }
-    result?;
+        .arg("-time-rewrite")
+        .run()
+        .with_context(|| anyhow::anyhow!("Could not optimize {path} with BOLT (its output: {log})"))?;
 
     Ok(())
 }

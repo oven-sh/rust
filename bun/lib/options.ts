@@ -62,10 +62,10 @@ export interface Options {
   /** BOLT clang and lld (lib/llvm.ts). */
   llvmBolt: boolean;
   /**
-   * BOLT rustc's libLLVM.so and librustc_driver.so (opt-dist stage 3). Off on aarch64 unless
-   * --aarch64-rust-bolt: there llvm-bolt 21 instruments, profiles and optimizes both libraries,
-   * inserts its long-jump stubs, and then never finishes writing the output (killed after 3.5 h;
-   * x64 takes ~150 s). Upstream does not BOLT on aarch64 either ("broken", rust-lang/rust#133807).
+   * BOLT rustc's libLLVM.so and librustc_driver.so (opt-dist stage 3). Upstream does this on
+   * x86_64 only ("broken" on aarch64, rust-lang/rust#133807); here on both: the aarch64 failure
+   * was llvm-bolt -update-debug-sections looping forever on ELF-compressed debug sections, fixed in
+   * our llvm-project, plus rust.compress-debuginfo=off and no jump tables (lib/rust.ts).
    */
   rustBolt: boolean;
 }
@@ -118,7 +118,7 @@ export function parseOptions(argv: string[]): Options {
     llvmBolt: take("skip-bolt") === undefined,
     rustBolt: false,
   };
-  options.rustBolt = options.llvmBolt && (options.host !== "linux-aarch64" || take("aarch64-rust-bolt") !== undefined);
+  options.rustBolt = options.llvmBolt;
   for (const k of [...args.keys()]) if (k.startsWith("bolt-")) args.delete(k);
   if (args.size > 0) {
     console.error(`unknown option(s): ${[...args.keys()].map(k => `--${k}`).join(", ")}`);
@@ -148,8 +148,7 @@ options:
   --variant=NAME       which Bun build to train on: ci-<os>-<arch>[-<abi>|-asan] or dev (lib/variants.ts)
   --variants=A,B       (matrix) only these variants
   --halves=llvm,rust   (matrix) only these halves
-  --skip-bolt          PGO only
-  --aarch64-rust-bolt  also BOLT rustc's libraries on aarch64 (experimental; llvm-bolt 21 hung on them)`);
+  --skip-bolt          PGO only`);
   process.exit(2);
 }
 

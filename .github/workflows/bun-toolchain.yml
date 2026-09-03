@@ -32,7 +32,7 @@ on:
         type: boolean
         default: false
       extra-args:
-        description: extra bun/toolchain.ts options for every job (e.g. --aarch64-rust-bolt)
+        description: extra bun/toolchain.ts options for every job (e.g. --skip-bolt)
         required: false
       bolt-lab:
         description: "instead of building: the run id whose profiles-<host>-<variant>-rust artifact (bolt-inputs) `toolchain.ts bolt-lab` should run on, with extra-args (e.g. --bolt-flags=no-split --bolt-lib=libLLVM)"

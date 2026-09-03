@@ -72,8 +72,8 @@ const runShConfigureArgs = [
  * libstdc++.a; here: apt.llvm.org's clang 21, GCC 13's libstdc++.a).
  */
 function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
-  // --aarch64-rust-bolt only (see Options.rustBolt): no jump tables in libLLVM.so /
-  // librustc_driver.so so llvm-bolt can process them (NO_JUMP_TABLES in llvm.ts).
+  // aarch64 + BOLT: no jump tables in libLLVM.so / librustc_driver.so so llvm-bolt can process
+  // them (NO_JUMP_TABLES in llvm.ts; the same is done for clang and lld there).
   const boltable = o.host === "linux-aarch64" && o.rustBolt;
   const triple_ = o.triple.replaceAll("-", "_");
   return {
@@ -96,20 +96,14 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
       // Smaller libLLVM.so to load, LTO and BOLT.
       "--set llvm.targets=AArch64;X86",
       "--set llvm.experimental-targets=",
-      // deviation: no -gz / --compress-debug-sections on rustc's LLVM and libraries. The dist
-      // profile compresses them; llvm-bolt -update-debug-sections cannot read SHF_COMPRESSED DWARF
-      // (it looped forever on the aarch64 libLLVM.so's .debug_line_str — fixed in our llvm-project,
-      // but decompressed input is still what BOLT rewrites correctly). The shipped libraries are
-      // stripped of debug sections by dist either way.
+      // deviation: no -gz / --compress-debug-sections on rustc's LLVM and libraries (the dist
+      // profile compresses them; upstream's non-dist CI turns it off too). llvm-bolt
+      // -update-debug-sections looped forever on the aarch64 libLLVM.so's compressed .debug_line_str;
+      // that is fixed in our llvm-project, and uncompressed input keeps BOLT off that path entirely.
       "--set rust.compress-debuginfo=off",
       ...(boltable ? [`--set llvm.cflags=${NO_JUMP_TABLES}`, `--set llvm.cxxflags=${NO_JUMP_TABLES}`] : []),
     ],
-    // OPT_DIST_BOLT_SERIAL: opt-dist rewrites libLLVM.so and librustc_driver.so one after the other
-    // instead of at once (with both in flight the aarch64 builder stalled: memory).
-    // OPT_DIST_BOLT_MEM_LIMIT: cap each rewrite's address space (40 GiB of the builder's 64) so a
-    // runaway one fails instead of stalling the machine; OPT_DIST_BOLT_VERBOSE while this is being
-    // debugged.
-    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES, OPT_DIST_BOLT_SERIAL: "1", OPT_DIST_BOLT_MEM_LIMIT: String(40 * 2 ** 30), OPT_DIST_BOLT_VERBOSE: "1" } : {},
+    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES } : {},
   };
 }
 
