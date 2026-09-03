@@ -112,14 +112,16 @@ RUN { curl -fsSL --retry 3 https://ftpmirror.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GC
     && ldconfig -p | grep -m1 'libstdc++.so.6 ' | grep -q /opt/gcc
 
 # Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt / merge-fdata for
-# the PGO/BOLT steps: built from the release our src/llvm-project is based on, the way
-# upstream's src/ci/docker/scripts/build-clang.sh builds its host clang (plain Release build
-# with the image's GCC; clang, lld, bolt, compiler-rt; no tests). Same major version as the
-# LLVM being built, so profiles written by one are readable by the other. (LLVM's own release
-# binaries need glibc 2.34, and apt.llvm.org has no arm64 packages for focal from 22 on.)
+# the PGO/BOLT steps: built from our src/llvm-project (oven-sh/llvm-project, the commit the
+# submodule points at — so its llvm-bolt carries our BOLT fixes), the way upstream's
+# src/ci/docker/scripts/build-clang.sh builds its host clang (plain Release build with the
+# image's GCC; clang, lld, bolt, compiler-rt; no tests). Same LLVM as the one being built, so
+# profiles written by one are readable by the other. (LLVM's own release binaries need glibc
+# 2.34, and apt.llvm.org has no arm64 packages for focal from 22 on.)
 # Unlike build-clang.sh the sanitizer runtimes are kept: Bun's ASan configurations link them.
-ARG HOST_LLVM=22.1.8
-RUN mkdir /tmp/llvm && curl -fsSL --retry 8 https://github.com/llvm/llvm-project/archive/llvmorg-${HOST_LLVM}.tar.gz | tar -xz -C /tmp/llvm --strip-components=1 \
+# Bump together with the submodule when a host-tool fix lands there.
+ARG HOST_LLVM=fc7c395b9c5482ec64c5727037bd682e903d37d0
+RUN mkdir /tmp/llvm && curl -fsSL --retry 8 https://github.com/oven-sh/llvm-project/archive/${HOST_LLVM}.tar.gz | tar -xz -C /tmp/llvm --strip-components=1 \
     && cmake -G Ninja -S /tmp/llvm/llvm -B /tmp/llvm/build \
          -DCMAKE_C_COMPILER=/opt/gcc/bin/gcc -DCMAKE_CXX_COMPILER=/opt/gcc/bin/g++ \
          -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/llvm \
@@ -145,19 +147,6 @@ RUN printf -- '--gcc-install-dir=%s\n' "$(dirname "$(/opt/gcc/bin/gcc -print-lib
        done
 # Unversioned clang/clang++/ld.lld/llvm-* on PATH, as rust's `target.*.linker=clang` expects.
 ENV PATH=/opt/llvm/bin:$PATH CC=clang CXX=clang++
-
-# A second llvm-bolt from llvm-project main (pinned), in /opt/llvm-bolt-main/{bin,lib}: to check
-# whether an aarch64 BOLT problem seen with the release above is already fixed upstream
-# (`toolchain.ts bolt-lab --bolt-binary=/opt/llvm-bolt-main/bin/llvm-bolt`). Not used by the builds.
-ARG BOLT_MAIN=038b4cde32cb6f593a159aee159a18b87ca2662f
-RUN mkdir /tmp/lp && curl -fsSL --retry 8 https://github.com/llvm/llvm-project/archive/${BOLT_MAIN}.tar.gz | tar -xz -C /tmp/lp --strip-components=1 \
-    && cmake -G Ninja -S /tmp/lp/llvm -B /tmp/lp/build \
-         -DCMAKE_C_COMPILER=/opt/llvm/bin/clang -DCMAKE_CXX_COMPILER=/opt/llvm/bin/clang++ -DLLVM_ENABLE_LLD=ON \
-         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/llvm-bolt-main \
-         -DLLVM_ENABLE_PROJECTS=bolt -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
-         -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF >/dev/null \
-    && { ninja -C /tmp/lp/build install-bolt >/tmp/lp.log 2>&1 || { tail -100 /tmp/lp.log; exit 1; }; } \
-    && cd / && rm -rf /tmp/lp /tmp/lp.log && /opt/llvm-bolt-main/bin/llvm-bolt --version | head -3
 
 # zstd for `llvm.libzstd=true`, built as upstream's src/ci/docker/scripts/build-zstd.sh
 # does. (Ubuntu's libzstd.a is GCC-built with hot/cold-split functions and no FILE

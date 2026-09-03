@@ -96,6 +96,12 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
       // Smaller libLLVM.so to load, LTO and BOLT.
       "--set llvm.targets=AArch64;X86",
       "--set llvm.experimental-targets=",
+      // deviation: no -gz / --compress-debug-sections on rustc's LLVM and libraries. The dist
+      // profile compresses them; llvm-bolt -update-debug-sections cannot read SHF_COMPRESSED DWARF
+      // (it looped forever on the aarch64 libLLVM.so's .debug_line_str — fixed in our llvm-project,
+      // but decompressed input is still what BOLT rewrites correctly). The shipped libraries are
+      // stripped of debug sections by dist either way.
+      "--set rust.compress-debuginfo=off",
       ...(boltable ? [`--set llvm.cflags=${NO_JUMP_TABLES}`, `--set llvm.cxxflags=${NO_JUMP_TABLES}`] : []),
     ],
     // OPT_DIST_BOLT_SERIAL: opt-dist rewrites libLLVM.so and librustc_driver.so one after the other
