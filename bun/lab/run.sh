@@ -23,14 +23,17 @@ set print thread-events off
 set breakpoint pending on
 break $fwk
 run
-# at function entry: the frame will be entry_sp - 0x80 (callee saves) - 0x2da0; the slot HashMap::extend
-# reads the iterator's size_hint() lower bound from is frame+0x8e0 (ldr x21, [sp, #0x8e0]).
-set \$slot = (unsigned long *)((char *)\$sp - 0x80 - 0x2da0 + 0x8e0)
-printf "entry sp=%p slot=%p\\n", \$sp, \$slot
+# gdb stops after the prologue (fill_well_known+0x44), so sp is already the frame base; the slot
+# HashMap::extend reads the iterator's size_hint() lower bound from is frame+0x8e0 (ldr x21, [sp, #0x8e0]).
+x/2i \$pc
+set \$slot = (unsigned long *)((char *)\$sp + 0x8e0)
+printf "frame sp=%p slot=%p (initial contents 0x%lx 0x%lx)\\n", \$sp, \$slot, *(\$slot-1), *\$slot
+# also catch the reader: the load at the block that computes the reserve amount
+
 watch -l *\$slot
 commands
   printf "---- write to slot: now 0x%lx (pair: 0x%lx 0x%lx)  sp=%p fwk-frame=[%p,%p)\\n", *\$slot, *(\$slot-1), *\$slot, \$sp, (char*)\$slot - 0x8e0, (char*)\$slot - 0x8e0 + 0x2e20
-  info registers x0 x1 x2 x4 x5 x6 x7 x16 x29 x30 sp pc
+  info registers x0 x1 x8 x9 x21 x22 sp pc
   x/12i \$pc-32
   info symbol \$pc
   bt 8
