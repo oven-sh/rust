@@ -58,13 +58,12 @@ const TRAINING_TOOLS = [
  * instrumented stage gets it too so its profile matches the final stage's control flow.
  */
 /**
- * The CPU the toolchain's own binaries (clang, lld, rustc's libraries) are compiled for, per host —
- * host code only, never the runtimes/std shipped for targets. linux-aarch64: oven-sh/bun's build
- * agents are AWS r8g (Graviton4, Neoverse V2); the GitHub arm64 runners these toolchains are built
- * and trained on are Neoverse N2, which runs V2-tuned code (same Armv9.0-A feature set). x64 hosts
- * are too varied (CI agents, developer machines) to pick one.
+ * -mcpu / -Ctarget-cpu for the toolchain's own binaries (clang, lld, rustc's libraries), per host —
+ * host code only, never the runtimes/std shipped for targets. None by default: neoverse-v2 (what
+ * oven-sh/bun's r8g build agents are) measured within noise of generic on Bun's CI, and generic
+ * runs on every agent that touches the images. --host-cpu=NAME to experiment.
  */
-export const HOST_CPU: Partial<Record<Host, string>> = { "linux-aarch64": "neoverse-v2" };
+export const HOST_CPU: Partial<Record<Host, string>> = {};
 
 export const NO_JUMP_TABLES = "-fno-jump-tables";
 
