@@ -40,6 +40,9 @@ on:
       repro-ref:
         description: "with repro-run: commit whose compiler/, library/, src/bootstrap and src/llvm-project to build (default: the checked-out ref)"
         required: false
+      lab-run:
+        description: "instead of building: run bun/lab/run.sh on the arm64 runner host against the rust-repro-<host>-<variant> artifact of this run id"
+        required: false
       bolt-lab:
         description: "instead of building: the run id whose profiles-<host>-<variant>-rust artifact (bolt-inputs) `toolchain.ts bolt-lab` should run on, with extra-args (e.g. --bolt-flags=no-split --bolt-lib=libLLVM)"
         required: false
@@ -121,11 +124,28 @@ jobs:
             gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions/$id" || true
           done
 
+  # Dispatch-only: bun/lab/run.sh against a saved rust-repro artifact, on the runner host (gdb etc.).
+  lab:
+    needs: [plan]
+    if: inputs.lab-run != ''
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    name: lab ${{ matrix.variant }} (${{ matrix.host }})
+    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { submodules: false, fetch-depth: 1 }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: "rust-repro-${{ matrix.host }}-${{ matrix.variant }}", path: obj/lab, run-id: "${{ inputs.lab-run }}", github-token: "${{ github.token }}" }
+      - name: bun/lab/run.sh
+        run: bash bun/lab/run.sh "$PWD/obj/lab"
+
   # Dispatch-only: rebuild a previous run's stage2 rustc from that run's PGO profiles, instrument
   # librustc_driver.so with BOLT and run it (see bun/lib/rust-repro.ts).
   rust-repro:
     needs: [plan, image]
-    if: inputs.repro-run != ''
+    if: inputs.repro-run != '' && !inputs.lab-run
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
@@ -202,7 +222,7 @@ jobs:
 
   llvm-instrumented:
     needs: [plan, image]
-    if: needs.plan.outputs.llvm == 'true' && !inputs.bolt-lab && !inputs.repro-run
+    if: needs.plan.outputs.llvm == 'true' && !inputs.bolt-lab && !inputs.repro-run && !inputs.lab-run
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
@@ -276,7 +296,7 @@ jobs:
 
   rust:
     needs: [plan, image]
-    if: needs.plan.outputs.rust == 'true' && !inputs.bolt-lab && !inputs.repro-run
+    if: needs.plan.outputs.rust == 'true' && !inputs.bolt-lab && !inputs.repro-run && !inputs.lab-run
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
