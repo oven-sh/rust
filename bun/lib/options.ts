@@ -1,5 +1,6 @@
 // Command line and fixed inputs of the toolchain build.
 
+import { HOST_CPU } from "./llvm.ts";
 import { availableParallelism } from "node:os";
 import { findVariant, type Variant, variantsFor } from "./variants.ts";
 import { join, resolve } from "node:path";
@@ -25,6 +26,7 @@ export const COMMANDS = {
   package: "bun-toolchain-<host>-<variant>-{llvm,rust}.tar.zst from the two installs",
   all: "every step above, in order (default)",
   probe: "print what this machine has (cores, memory, disk, host tools)",
+  "rust-repro": "rebuild a previous run's stage2 rustc from its PGO profiles (--pgo-dir=DIR), BOLT-instrument librustc_driver.so and run it (lib/rust-repro.ts)",
   "bolt-lab": "run llvm-bolt on saved opt-dist BOLT inputs with a chosen flag set (--bolt-inputs=DIR, --bolt-lib, --bolt-flags, --bolt-timeout)",
   matrix: "print the {host, variant} build matrix as JSON (for the workflow); --variants=a,b filters",
 } as const;
@@ -54,6 +56,8 @@ export interface Options {
   jobs: number;
   /** The Bun build the profiles come from (lib/variants.ts): a ci-<lane> or dev. */
   variant: Variant;
+  /** -mcpu/-Ctarget-cpu for the toolchain's own host binaries (default HOST_CPU[host] in llvm.ts; --host-cpu=none|NAME). */
+  hostCpu: string | undefined;
   /** `bolt-lab` only: its --bolt-* arguments. */
   extra: Map<string, string>;
   /** `matrix` only: restrict the printed matrix to these variant names / these halves. */
@@ -110,16 +114,19 @@ export function parseOptions(argv: string[]): Options {
     bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
     bunDir: take("bun-dir"),
     variantFilter: take("variants")?.split(","),
-    extra: new Map([...args].filter(([k]) => k.startsWith("bolt-"))),
+    extra: new Map([...args].filter(([k]) => k.startsWith("bolt-") || k === "pgo-dir")),
     halves: (h => { for (const x of h) if (x !== "llvm" && x !== "rust") throw new Error(`--halves: llvm,rust; got ${x}`); return h as ("llvm" | "rust")[]; })(take("halves")?.split(",") ?? ["llvm", "rust"]),
     jobs: Number(take("jobs") ?? availableParallelism()),
     // llvm-instrumented, matrix and probe do not depend on the variant; the default only has to exist.
     variant: findVariant(host, take("variant") ?? variantsFor(host)[0]!.name),
     llvmBolt: take("skip-bolt") === undefined,
     rustBolt: false,
+    hostCpu: HOST_CPU[host],
   };
   options.rustBolt = options.llvmBolt;
-  for (const k of [...args.keys()]) if (k.startsWith("bolt-")) args.delete(k);
+  const hostCpu = take("host-cpu");
+  if (hostCpu !== undefined) options.hostCpu = hostCpu === "none" ? undefined : hostCpu;
+  for (const k of [...args.keys()]) if (k.startsWith("bolt-") || k === "pgo-dir") args.delete(k);
   if (args.size > 0) {
     console.error(`unknown option(s): ${[...args.keys()].map(k => `--${k}`).join(", ")}`);
     usage();
@@ -148,7 +155,8 @@ options:
   --variant=NAME       which Bun build to train on: ci-<os>-<arch>[-<abi>|-asan] or dev (lib/variants.ts)
   --variants=A,B       (matrix) only these variants
   --halves=llvm,rust   (matrix) only these halves
-  --skip-bolt          PGO only`);
+  --skip-bolt          PGO only
+  --host-cpu=NAME|none -mcpu/-Ctarget-cpu for the toolchain's own binaries (default: per host, lib/llvm.ts)`);
   process.exit(2);
 }
 

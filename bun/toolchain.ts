@@ -6,11 +6,12 @@
 
 import { freemem, totalmem, cpus } from "node:os";
 import { statfsSync, readFileSync } from "node:fs";
-import { buildFinal as buildLlvm, buildInstrumented as buildLlvmInstrumented, HOST_CPU } from "./lib/llvm.ts";
+import { buildFinal as buildLlvm, buildInstrumented as buildLlvmInstrumented } from "./lib/llvm.ts";
 import { type Command, type Options, parseOptions } from "./lib/options.ts";
 import { packageToolchain } from "./lib/package.ts";
 import { buildRust } from "./lib/rust.ts";
 import { boltLab } from "./lib/bolt-lab.ts";
+import { rustRepro } from "./lib/rust-repro.ts";
 import { VARIANTS } from "./lib/variants.ts";
 import { run } from "./lib/run.ts";
 import { mkdir } from "./lib/fs.ts";
@@ -40,6 +41,7 @@ const steps: Record<Command, () => void | Promise<void>> = {
   package: () => { packageToolchain(options); },
   matrix: () => {},
   "bolt-lab": () => boltLab(options, options.extra),
+  "rust-repro": () => rustRepro(options, options.extra),
   all: async () => {
     buildLlvmInstrumented(options);
     await buildLlvm(options);
@@ -53,7 +55,7 @@ function probe(o: Options): void {
   const gib = (n: number) => `${(n / 2 ** 30).toFixed(0)} GiB`;
   const disk = statfsSync(o.buildDir);
   console.log(`host        ${o.host} (${o.triple}), ${o.jobs} jobs`);
-  console.log(`cpu         ${cpuModel()}${HOST_CPU[o.host] ? ` (toolchain binaries built for -mcpu=${HOST_CPU[o.host]})` : ""}`);
+  console.log(`cpu         ${cpuModel()}${o.hostCpu ? ` (toolchain binaries built for -mcpu=${o.hostCpu})` : ""}`);
   console.log(`memory      ${gib(freemem())} free of ${gib(totalmem())}`);
   console.log(`disk        ${gib(disk.bavail * disk.bsize)} free under ${o.buildDir}`);
   console.log(`checkout    ${o.checkout} @ ${git(o.checkout)}`);

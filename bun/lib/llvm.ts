@@ -113,7 +113,7 @@ function stageCFlags(o: Options, stage: "instrumented" | "final"): string {
   const flags: string[] = [];
   if (o.host === "linux-aarch64" && o.llvmBolt) flags.push(NO_JUMP_TABLES);
   // Host tools only: the runtimes sub-build (compiler-rt) does not inherit CMAKE_C(XX)_FLAGS.
-  const cpu = HOST_CPU[o.host];
+  const cpu = o.hostCpu;
   if (cpu !== undefined) flags.push(`-mcpu=${cpu}`);
   const gcc = hostGccInstallDir(o);
   if (gcc !== undefined) flags.push(`--gcc-install-dir=${gcc}`);

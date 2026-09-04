@@ -13,7 +13,7 @@
 import { chmodSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
-import { HOST_CPU, NO_JUMP_TABLES } from "./llvm.ts";
+import { NO_JUMP_TABLES } from "./llvm.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
@@ -71,7 +71,7 @@ const runShConfigureArgs = [
  * and the host compilers in bun/Dockerfile (upstream: self-built clang 22.1.0, GCC 9's
  * libstdc++.a; here: apt.llvm.org's clang 21, GCC 13's libstdc++.a).
  */
-function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
+export function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<string, string> } {
   // aarch64 + BOLT: no jump tables in libLLVM.so / librustc_driver.so so llvm-bolt can process
   // them (NO_JUMP_TABLES in llvm.ts; the same is done for clang and lld there).
   const boltable = o.host === "linux-aarch64" && o.rustBolt;
@@ -79,8 +79,8 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
   // Host-only code generation flags: rustc's own crates (RUSTC_RUSTFLAGS, a bootstrap hook of ours,
   // see compile.rs rustc_cargo) and its libLLVM (llvm.cflags). std and everything else that ends up
   // in programs compiled *with* this toolchain stay generic. HOST_CPU in llvm.ts says why that CPU.
-  const llvmCFlags = [...(boltable ? [NO_JUMP_TABLES] : []), ...(HOST_CPU[o.host] ? [`-mcpu=${HOST_CPU[o.host]}`] : [])].join(" ");
-  const rustcFlags = HOST_CPU[o.host] ? `-Ctarget-cpu=${HOST_CPU[o.host]}` : undefined;
+  const llvmCFlags = [...(boltable ? [NO_JUMP_TABLES] : []), ...(o.hostCpu ? [`-mcpu=${o.hostCpu}`] : [])].join(" ");
+  const rustcFlags = o.hostCpu ? `-Ctarget-cpu=${o.hostCpu}` : undefined;
   return {
     drop: [
       "--enable-sccache", // build only: upstream's S3-backed compiler cache

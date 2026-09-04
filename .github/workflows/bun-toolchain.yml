@@ -34,6 +34,12 @@ on:
       extra-args:
         description: extra bun/toolchain.ts options for every job (e.g. --skip-bolt)
         required: false
+      repro-run:
+        description: "instead of building: the run id whose profiles-<host>-<variant>-rust artifact (PGO profdata) `toolchain.ts rust-repro` rebuilds stage2 rustc from, then BOLT-instruments and runs it (lib/rust-repro.ts); repro-ref = the commit that run built"
+        required: false
+      repro-ref:
+        description: "with repro-run: commit whose compiler/, library/, src/bootstrap and src/llvm-project to build (default: the checked-out ref)"
+        required: false
       bolt-lab:
         description: "instead of building: the run id whose profiles-<host>-<variant>-rust artifact (bolt-inputs) `toolchain.ts bolt-lab` should run on, with extra-args (e.g. --bolt-flags=no-split --bolt-lib=libLLVM)"
         required: false
@@ -113,6 +119,49 @@ jobs:
             gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions/$id" || true
           done
 
+  # Dispatch-only: rebuild a previous run's stage2 rustc from that run's PGO profiles, instrument
+  # librustc_driver.so with BOLT and run it (see bun/lib/rust-repro.ts).
+  rust-repro:
+    needs: [plan, image]
+    if: inputs.repro-run != ''
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    name: rust-repro ${{ matrix.variant }} (${{ matrix.host }})
+    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { submodules: false, fetch-depth: 0 }
+      - name: Sources of ${{ inputs.repro-ref || github.sha }}, scripts of ${{ github.sha }}
+        run: |
+          if [ -n "${{ inputs.repro-ref }}" ]; then
+            git checkout ${{ inputs.repro-ref }} -- compiler library src/bootstrap src/llvm-project Cargo.lock Cargo.toml
+          fi
+          git submodule update --init --depth=1 src/llvm-project
+          git status --short | head; git -C src/llvm-project log --oneline -1
+      - name: Container image
+        run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: "profiles-${{ matrix.host }}-${{ matrix.variant }}-rust", path: obj/repro-profiles, run-id: "${{ inputs.repro-run }}", github-token: "${{ github.token }}" }
+      - name: Rebuild stage2 rustc from those profiles, instrument, run
+        run: |
+          mkdir -p obj/home && GID=$(id -g) && ls -la obj/repro-profiles
+          eval "$IN_CONTAINER node bun/toolchain.ts rust-repro --variant=${{ matrix.variant }} --pgo-dir=/checkout/obj/repro-profiles $TOOLCHAIN_ARGS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: rust-repro-${{ matrix.host }}-${{ matrix.variant }}
+          path: |
+            obj/bun-toolchain/out/rust-repro/*.so*
+            obj/bun-toolchain/out/rust-repro/*.txt
+            obj/bun-toolchain/out/rust-repro/probe-*.out
+          if-no-files-found: warn
+          retention-days: 14
+
   # Dispatch-only: rerun llvm-bolt on a previous run's saved BOLT inputs (see bun/lib/bolt-lab.ts).
   bolt-lab:
     needs: [plan, image]
@@ -146,7 +195,7 @@ jobs:
 
   llvm-instrumented:
     needs: [plan, image]
-    if: needs.plan.outputs.llvm == 'true' && !inputs.bolt-lab
+    if: needs.plan.outputs.llvm == 'true' && !inputs.bolt-lab && !inputs.repro-run
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
@@ -220,7 +269,7 @@ jobs:
 
   rust:
     needs: [plan, image]
-    if: needs.plan.outputs.rust == 'true' && !inputs.bolt-lab
+    if: needs.plan.outputs.rust == 'true' && !inputs.bolt-lab && !inputs.repro-run
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
@@ -269,8 +318,9 @@ jobs:
 
   release:
     needs: [llvm, rust]
-    # A half that plan left out is "skipped", which would otherwise skip this too.
-    if: ${{ !cancelled() && !failure() }}
+    # A half that plan left out is "skipped", which would otherwise skip this too; but at least one
+    # half must have run (the bolt-lab / rust-repro dispatches build nothing to release).
+    if: ${{ !cancelled() && !failure() && (needs.llvm.result == 'success' || needs.rust.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
