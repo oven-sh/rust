@@ -135,13 +135,16 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with: { submodules: false, fetch-depth: 0 }
+      # HEAD must be the original commit itself: rustc's version string (and with it every crate
+      # hash, symbol name and PGO profile key) includes it. Only bun/ and the workflow come from now.
       - name: Sources of ${{ inputs.repro-ref || github.sha }}, scripts of ${{ github.sha }}
         run: |
           if [ -n "${{ inputs.repro-ref }}" ]; then
-            git checkout ${{ inputs.repro-ref }} -- compiler library src/bootstrap src/llvm-project Cargo.lock Cargo.toml
+            git checkout --detach ${{ inputs.repro-ref }}
+            git checkout ${{ github.sha }} -- bun .github
           fi
           git submodule update --init --depth=1 src/llvm-project
-          git status --short | head; git -C src/llvm-project log --oneline -1
+          git log --oneline -1; git status --short | head; git -C src/llvm-project log --oneline -1
       - name: Container image
         run: |
           tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
