@@ -47,8 +47,10 @@ on:
     branches: ["nightly-*-bun"]
     paths: ["bun/**", "!bun/README.md", "!bun/measurements/**", ".github/workflows/bun-toolchain.yml", "src/tools/opt-dist/**", "src/llvm-project"]
 
+# A push supersedes the previous push's run on the branch; manually dispatched runs (subsets,
+# bolt-lab, rust-repro) are their own groups and neither cancel nor get cancelled by anything else.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'push' }}
   cancel-in-progress: true
 
 permissions:
