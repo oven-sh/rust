@@ -29,11 +29,20 @@ set \$slot = (unsigned long *)((char *)\$sp - 0x80 - 0x2da0 + 0x8e0)
 printf "entry sp=%p slot=%p\\n", \$sp, \$slot
 watch -l *\$slot
 commands
-  printf "---- write to slot: now 0x%lx (pair: 0x%lx 0x%lx)\\n", *\$slot, *(\$slot-1), *\$slot
-  bt 6
+  printf "---- write to slot: now 0x%lx (pair: 0x%lx 0x%lx)  sp=%p fwk-frame=[%p,%p)\\n", *\$slot, *(\$slot-1), *\$slot, \$sp, (char*)\$slot - 0x8e0, (char*)\$slot - 0x8e0 + 0x2e20
+  info registers x0 x1 x2 x4 x5 x6 x7 x16 x29 x30 sp pc
+  x/12i \$pc-32
+  info symbol \$pc
+  bt 8
   continue
 end
+# stop for good once the panic starts (everything after is noise)
+break rust_begin_unwind
+break __rustc::rust_begin_unwind
+break _RNvCs*7___rustc17rust_begin_unwind
 continue
 GDB
-  eval "timeout 600 gdb -batch -x cmds.gdb --args stage2/bin/rustc $args" < /dev/null 2>&1 | grep -vE "^\[(New|Thread|Inferior)|^warning: |Missing separate debuginfo|^Download" | tail -120 || true
+  eval "timeout 600 gdb -batch -x cmds.gdb --args stage2/bin/rustc $args" < /dev/null 2>&1 | grep -vE "^\[(New|Thread|Inferior)|^warning: |Missing separate debuginfo|^Download|^target_|^lib___|^___$|^unix$|^debug_assertions|^panic=|^proc_macro|^overflow_checks|^fmt_debug|^relocation_model|^ub_checks|^bun_codegen|^off$|^packed$|^unpacked$" | head -400 || true
 done
+# where the instrumented library's BOLT runtime lives, for mapping the pcs above
+readelf -SW "$name.instrumented" | grep -E "bolt|\.text" || true
