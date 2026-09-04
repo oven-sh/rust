@@ -4,9 +4,9 @@
 //
 //   node bun/toolchain.ts [command] [--option=value ...]   (commands: lib/options.ts COMMANDS)
 
-import { freemem, totalmem } from "node:os";
-import { statfsSync } from "node:fs";
-import { buildFinal as buildLlvm, buildInstrumented as buildLlvmInstrumented } from "./lib/llvm.ts";
+import { freemem, totalmem, cpus } from "node:os";
+import { statfsSync, readFileSync } from "node:fs";
+import { buildFinal as buildLlvm, buildInstrumented as buildLlvmInstrumented, HOST_CPU } from "./lib/llvm.ts";
 import { type Command, type Options, parseOptions } from "./lib/options.ts";
 import { packageToolchain } from "./lib/package.ts";
 import { buildRust } from "./lib/rust.ts";
@@ -53,6 +53,7 @@ function probe(o: Options): void {
   const gib = (n: number) => `${(n / 2 ** 30).toFixed(0)} GiB`;
   const disk = statfsSync(o.buildDir);
   console.log(`host        ${o.host} (${o.triple}), ${o.jobs} jobs`);
+  console.log(`cpu         ${cpuModel()}${HOST_CPU[o.host] ? ` (toolchain binaries built for -mcpu=${HOST_CPU[o.host]})` : ""}`);
   console.log(`memory      ${gib(freemem())} free of ${gib(totalmem())}`);
   console.log(`disk        ${gib(disk.bavail * disk.bsize)} free under ${o.buildDir}`);
   console.log(`checkout    ${o.checkout} @ ${git(o.checkout)}`);
@@ -81,5 +82,21 @@ function version(argv: string[]): string {
     return run(argv, { capture: true, quiet: true }).split("\n").find(l => l.trim().length > 0)?.trim() ?? "?";
   } catch {
     return "MISSING";
+  }
+}
+
+/** What this machine's CPU is: x86 has a model name; Arm Linux only gives implementer/part numbers. */
+function cpuModel(): string {
+  const model = cpus()[0]?.model?.trim();
+  if (model) return model;
+  try {
+    const info = readFileSync("/proc/cpuinfo", "utf8");
+    const field = (k: string) => new RegExp(`^${k}\\s*: (.+)$`, "m").exec(info)?.[1];
+    const part = field("CPU part");
+    // Arm Ltd. part numbers of the cores CI runners and build agents use.
+    const known: Record<string, string> = { "0xd0c": "Neoverse N1", "0xd40": "Neoverse V1", "0xd49": "Neoverse N2", "0xd4f": "Neoverse V2", "0xd8e": "Neoverse N3", "0xd84": "Neoverse V3" };
+    return `implementer ${field("CPU implementer")} part ${part}${part && known[part] ? ` (${known[part]})` : ""}`;
+  } catch {
+    return "unknown";
   }
 }

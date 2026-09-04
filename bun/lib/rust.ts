@@ -13,7 +13,7 @@
 import { chmodSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
-import { NO_JUMP_TABLES } from "./llvm.ts";
+import { HOST_CPU, NO_JUMP_TABLES } from "./llvm.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
@@ -76,6 +76,11 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
   // them (NO_JUMP_TABLES in llvm.ts; the same is done for clang and lld there).
   const boltable = o.host === "linux-aarch64" && o.rustBolt;
   const triple_ = o.triple.replaceAll("-", "_");
+  // Host-only code generation flags: rustc's own crates (RUSTC_RUSTFLAGS, a bootstrap hook of ours,
+  // see compile.rs rustc_cargo) and its libLLVM (llvm.cflags). std and everything else that ends up
+  // in programs compiled *with* this toolchain stay generic. HOST_CPU in llvm.ts says why that CPU.
+  const llvmCFlags = [...(boltable ? [NO_JUMP_TABLES] : []), ...(HOST_CPU[o.host] ? [`-mcpu=${HOST_CPU[o.host]}`] : [])].join(" ");
+  const rustcFlags = HOST_CPU[o.host] ? `-Ctarget-cpu=${HOST_CPU[o.host]}` : undefined;
   return {
     drop: [
       "--enable-sccache", // build only: upstream's S3-backed compiler cache
@@ -101,12 +106,15 @@ function bunDeltas(o: Options): { drop: string[]; add: string[]; env: Record<str
       // -update-debug-sections looped forever on the aarch64 libLLVM.so's compressed .debug_line_str;
       // that is fixed in our llvm-project, and uncompressed input keeps BOLT off that path entirely.
       "--set rust.compress-debuginfo=off",
-      ...(boltable ? [`--set llvm.cflags=${NO_JUMP_TABLES}`, `--set llvm.cxxflags=${NO_JUMP_TABLES}`] : []),
+      ...(llvmCFlags ? [`--set llvm.cflags=${llvmCFlags}`, `--set llvm.cxxflags=${llvmCFlags}`] : []),
     ],
     // OPT_DIST_BOLT_SAVE_INPUTS: keep each library's pre-BOLT and BOLT-instrumented copies with the
     // uploaded opt-artifacts while an intermittent crash of the instrumented aarch64
     // librustc_driver.so (in rustc_session's CheckCfg::fill_well_known) is being root-caused.
-    env: boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES, OPT_DIST_BOLT_SAVE_INPUTS: "1" } : {},
+    env: {
+      ...(boltable ? { RUSTFLAGS: "-Cjump-tables=no", [`CFLAGS_${triple_}`]: NO_JUMP_TABLES, [`CXXFLAGS_${triple_}`]: NO_JUMP_TABLES, OPT_DIST_BOLT_SAVE_INPUTS: "1" } : {}),
+      ...(rustcFlags ? { RUSTC_RUSTFLAGS: rustcFlags } : {}),
+    },
   };
 }
 
@@ -116,7 +124,8 @@ export function configureArgs(o: Options): string[] {
   return [...dockerfileConfigureArgs(o), ...runShConfigureArgs]
     .filter(a => !drop.includes(a))
     .concat(add)
-    .flatMap(a => a.split(" "));
+    // "--set key=value" entries become two arguments; a value may contain spaces (llvm.cflags).
+    .flatMap(a => (a.startsWith("--set ") ? ["--set", a.slice("--set ".length)] : a.split(" ")));
 }
 
 /**

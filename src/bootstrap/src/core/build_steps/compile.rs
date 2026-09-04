@@ -1290,6 +1290,16 @@ pub fn rustc_cargo(
 
     apply_pgo(builder, cargo, *build_compiler, &builder.config.rust_pgo);
 
+    // Codegen flags for the compiler's own crates only (unlike RUSTFLAGS, which also reaches std
+    // and everything else built for the target): e.g. RUSTC_RUSTFLAGS=-Ctarget-cpu=neoverse-v2 tunes
+    // the rustc that is dist'ed for the machines it will run on without changing the standard
+    // library programs built with it link.
+    if let Ok(flags) = std::env::var("RUSTC_RUSTFLAGS") {
+        for flag in flags.split_whitespace() {
+            cargo.rustflag(flag);
+        }
+    }
+
     // The stage0 compiler changes infrequently and does not directly depend on code
     // in the current working directory. Therefore, caching it with sccache should be
     // useful.

@@ -23,7 +23,7 @@
 import { chmodSync, copyFileSync, cpSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
-import { type Options, paths, RECIPE_VERSION } from "./options.ts";
+import { type Options, paths, RECIPE_VERSION, type Host } from "./options.ts";
 import { run, runConcurrently } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
 
@@ -57,6 +57,15 @@ const TRAINING_TOOLS = [
  * non-simple function"). It is a function attribute, so ThinLTO codegen honors it. The
  * instrumented stage gets it too so its profile matches the final stage's control flow.
  */
+/**
+ * The CPU the toolchain's own binaries (clang, lld, rustc's libraries) are compiled for, per host —
+ * host code only, never the runtimes/std shipped for targets. linux-aarch64: oven-sh/bun's build
+ * agents are AWS r8g (Graviton4, Neoverse V2); the GitHub arm64 runners these toolchains are built
+ * and trained on are Neoverse N2, which runs V2-tuned code (same Armv9.0-A feature set). x64 hosts
+ * are too varied (CI agents, developer machines) to pick one.
+ */
+export const HOST_CPU: Partial<Record<Host, string>> = { "linux-aarch64": "neoverse-v2" };
+
 export const NO_JUMP_TABLES = "-fno-jump-tables";
 
 const LLVM_LICENSES: Record<string, string> = {
@@ -103,6 +112,9 @@ function llvmRev(o: Options): string {
 function stageCFlags(o: Options, stage: "instrumented" | "final"): string {
   const flags: string[] = [];
   if (o.host === "linux-aarch64" && o.llvmBolt) flags.push(NO_JUMP_TABLES);
+  // Host tools only: the runtimes sub-build (compiler-rt) does not inherit CMAKE_C(XX)_FLAGS.
+  const cpu = HOST_CPU[o.host];
+  if (cpu !== undefined) flags.push(`-mcpu=${cpu}`);
   const gcc = hostGccInstallDir(o);
   if (gcc !== undefined) flags.push(`--gcc-install-dir=${gcc}`);
   if (stage === "instrumented") flags.push("-Xclang -mllvm -Xclang -vp-counters-per-site=8");
