@@ -140,6 +140,12 @@ jobs:
         with: { name: "rust-repro-${{ matrix.host }}-${{ matrix.variant }}", path: obj/lab, run-id: "${{ inputs.lab-run }}", github-token: "${{ github.token }}" }
       - name: bun/lab/run.sh
         run: bash bun/lab/run.sh "$PWD/obj/lab"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: lab-${{ matrix.host }}-${{ matrix.variant }}-${{ github.run_id }}
+          path: obj/lab/*.log
+          retention-days: 7
 
   # Dispatch-only: rebuild a previous run's stage2 rustc from that run's PGO profiles, instrument
   # librustc_driver.so with BOLT and run it (see bun/lib/rust-repro.ts).

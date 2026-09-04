@@ -16,6 +16,11 @@ echo "fill_well_known = $fwk"
 for lib in "$name" "$name.instrumented"; do
   echo; echo "================ $lib ================"
   cp "$lib" "stage2/lib/$name"
+  # offset (from fill_well_known) of the instruction that reads the slot: ldr x21, [sp, #0x8e0]
+  fwk_addr=$(nm --defined-only "$lib" | awk -v f="$fwk" '$3==f {print $1}')
+  fwk_size=$(nm -S --defined-only "$lib" | awk -v f="$fwk" '$4==f {print $2}')
+  reader_off=$(objdump -d --start-address=0x$fwk_addr --stop-address=$((0x$fwk_addr + 0x$fwk_size)) "$lib" | awk -v base=$((0x$fwk_addr)) '/ldr\tx21, \[sp, #2272\]|ldr\s+x21, \[sp, #0x8e0\]/ { split($1,a,":"); printf "%d\n", strtonum("0x" a[1]) - base; exit }')
+  echo "reader: fill_well_known+${reader_off:-?}"
   cat > cmds.gdb <<GDB
 set pagination off
 set confirm off
@@ -28,7 +33,11 @@ run
 x/2i \$pc
 set \$slot = (unsigned long *)((char *)\$sp + 0x8e0)
 printf "frame sp=%p slot=%p (initial contents 0x%lx 0x%lx)\\n", \$sp, \$slot, *(\$slot-1), *\$slot
-# also catch the reader: the load at the block that computes the reserve amount
+break *(\$pc - 0x44 + ${reader_off:-0})
+commands
+  printf "==== read of slot at fill_well_known+${reader_off:-0}: x21 will be 0x%lx (pair 0x%lx 0x%lx), [sp+0x460]=%p -> +0x20 = 0x%lx\\n", *\$slot, *(\$slot-1), *\$slot, *(void**)((char*)\$sp+0x460), *(unsigned long*)((char*)*(void**)((char*)\$sp+0x460)+0x20)
+  continue
+end
 
 watch -l *\$slot
 commands
@@ -45,7 +54,10 @@ break __rustc::rust_begin_unwind
 break _RNvCs*7___rustc17rust_begin_unwind
 continue
 GDB
-  eval "timeout 600 gdb -batch -x cmds.gdb --args stage2/bin/rustc $args" < /dev/null 2>&1 | grep -vE "^\[(New|Thread|Inferior)|^warning: |Missing separate debuginfo|^Download|^target_|^lib___|^___$|^unix$|^debug_assertions|^panic=|^proc_macro|^overflow_checks|^fmt_debug|^relocation_model|^ub_checks|^bun_codegen|^off$|^packed$|^unpacked$" | head -400 || true
+  log="gdb-$lib.log"
+  eval "timeout 900 gdb -batch -x cmds.gdb --args stage2/bin/rustc $args" < /dev/null > "$log" 2>&1 || true
+  echo "$(grep -c 'write to slot' "$log") writes, $(grep -c 'read of slot' "$log") reads logged → $log ($(wc -l < "$log") lines)"
+  grep -nE "write to slot|read of slot|hit Breakpoint [345]|panicked|SIGSEGV|exited" "$log" | tail -40
 done
 # where the instrumented library's BOLT runtime lives, for mapping the pcs above
 readelf -SW "$name.instrumented" | grep -E "bolt|\.text" || true
