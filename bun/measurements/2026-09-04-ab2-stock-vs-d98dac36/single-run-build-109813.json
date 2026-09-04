@@ -1,0 +1,151 @@
+{
+ "build": 109813,
+ "lanes": {
+  "darwin aarch64": {
+   "deps + fetch": 20.7,
+   "codegen": 8.6,
+   "c/c++ objects": 41.4,
+   "cargo": 128.0,
+   "archive": 1.9,
+   "link": 66.0,
+   "strip + post-link": 207.0,
+   "other": 2.7,
+   "total": 215.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-darwin-aarch64/bin/clang rustc=/opt"
+  },
+  "darwin x64": {
+   "deps + fetch": 21.6,
+   "codegen": 8.4,
+   "c/c++ objects": 43.8,
+   "cargo": 125.0,
+   "archive": 2.1,
+   "link": 68.0,
+   "strip + post-link": 206.0,
+   "other": 2.2,
+   "total": 214.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-darwin-x64/bin/clang rustc=/opt/bun"
+  },
+  "linux aarch64": {
+   "deps + fetch": 55.3,
+   "codegen": 8.6,
+   "c/c++ objects": 79.0,
+   "cargo": 138.0,
+   "archive": 2.2,
+   "link": 74.0,
+   "strip + post-link": 166.0,
+   "other": 0.1,
+   "total": 222.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-linux-aarch64/bin/clang rustc=/opt/"
+  },
+  "linux x64": {
+   "deps + fetch": 19.5,
+   "codegen": 8.4,
+   "c/c++ objects": 43.0,
+   "cargo": 128.0,
+   "archive": 1.2,
+   "link": 68.0,
+   "strip + post-link": 195.0,
+   "total": 205.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-linux-x64/bin/clang rustc=/opt/bun-"
+  },
+  "linux x64-asan": {
+   "deps + fetch": 27.6,
+   "codegen": 8.5,
+   "c/c++ objects": 68.0,
+   "cargo": 106.0,
+   "archive": 1.4,
+   "link": 7.6,
+   "strip + post-link": 92.0,
+   "total": 122.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-linux-x64-asan/bin/clang rustc=/opt"
+  },
+  "linux aarch64-musl": {
+   "deps + fetch": 48.7,
+   "codegen": 8.5,
+   "c/c++ objects": 72.0,
+   "cargo": 126.0,
+   "archive": 2.2,
+   "link": 73.0,
+   "strip + post-link": 160.0,
+   "total": 209.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-linux-aarch64-musl/bin/clang rustc="
+  },
+  "linux x64-musl": {
+   "deps + fetch": 18.1,
+   "codegen": 8.5,
+   "c/c++ objects": 44.9,
+   "cargo": 133.0,
+   "archive": 2.2,
+   "link": 71.0,
+   "strip + post-link": 206.0,
+   "total": 214.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-linux-x64-musl/bin/clang rustc=/opt"
+  },
+  "linux aarch64-android": {
+   "deps + fetch": 25.0,
+   "codegen": 8.2,
+   "c/c++ objects": 40.5,
+   "cargo": 267.0,
+   "archive": 1.5,
+   "link": 3.3,
+   "strip + post-link": 259.0,
+   "total": 279.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-linux-aarch64-android/bin/clang rus"
+  },
+  "linux x64-android": {
+   "deps + fetch": 25.3,
+   "codegen": 8.4,
+   "c/c++ objects": 41.4,
+   "cargo": 274.0,
+   "archive": 1.5,
+   "link": 3.2,
+   "strip + post-link": 266.0,
+   "total": 286.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-linux-x64-android/bin/clang rustc=/"
+  },
+  "freebsd x64": {
+   "deps + fetch": 18.4,
+   "codegen": 8.3,
+   "c/c++ objects": 34.8,
+   "cargo": 253.0,
+   "archive": 1.1,
+   "link": 3.3,
+   "strip + post-link": 262.0,
+   "total": 266.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-freebsd-x64/bin/clang rustc=/opt/bu"
+  },
+  "freebsd aarch64": {
+   "deps + fetch": 30.9,
+   "codegen": 8.4,
+   "c/c++ objects": 45.3,
+   "cargo": 267.0,
+   "archive": 1.3,
+   "link": 3.1,
+   "strip + post-link": 274.0,
+   "total": 279.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-freebsd-aarch64/bin/clang rustc=/op"
+  },
+  "windows x64": {
+   "deps + fetch": 24.3,
+   "codegen": 8.4,
+   "c/c++ objects": 53.9,
+   "cargo": 170.0,
+   "link": 103.0,
+   "strip + post-link": 251.0,
+   "other": 56.3,
+   "total": 275.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-windows-x64/bin/clang-cl rustc=/opt"
+  },
+  "windows aarch64": {
+   "deps + fetch": 18.2,
+   "codegen": 8.3,
+   "c/c++ objects": 35.2,
+   "cargo": 295.0,
+   "link": 4.2,
+   "strip + post-link": 288.0,
+   "other": 36.5,
+   "total": 301.0,
+   "toolchain": "cc=/opt/bun-toolchain/ci-windows-aarch64/bin/clang-cl rustc="
+  }
+ }
+}

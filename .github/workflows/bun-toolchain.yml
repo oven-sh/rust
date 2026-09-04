@@ -39,7 +39,7 @@ on:
         required: false
   push:
     branches: ["nightly-*-bun"]
-    paths: ["bun/**", "!bun/README.md", ".github/workflows/bun-toolchain.yml", "src/tools/opt-dist/**", "src/llvm-project"]
+    paths: ["bun/**", "!bun/README.md", "!bun/measurements/**", ".github/workflows/bun-toolchain.yml", "src/tools/opt-dist/**", "src/llvm-project"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
