@@ -162,6 +162,8 @@ jobs:
           name: rust-repro-${{ matrix.host }}-${{ matrix.variant }}
           path: |
             obj/bun-toolchain/out/rust-repro/*.so*
+            obj/bun-toolchain/out/rust-repro/stage2.tar.zst
+            obj/bun-toolchain/out/rust-repro/probe.sh
             obj/bun-toolchain/out/rust-repro/*.txt
             obj/bun-toolchain/out/rust-repro/probe-*.out
           if-no-files-found: warn

@@ -60,23 +60,30 @@ export function rustRepro(o: Options, args: Map<string, string>): void {
   ]);
   cpSync(join(out, `${name}.instrumented`), driver);
 
-  // 4. the command cargo runs first and that crashed (cargo's target-info probe), verbatim from the
-  //    failed job's log minus the lane-specific codegen flags, against the instrumented library.
+  // 4. the command that crashed: cargo's target-info probe as Bun's build invokes it (verbatim from
+  //    the failed jobs' logs). The --check-cfg arguments matter: CheckCfg::fill_well_known, where
+  //    both crashes were, returns immediately unless check-cfg is enabled.
   const rustc = join(build, o.triple, "stage2", "bin", "rustc");
   write(join(out, "empty.rs"), "");
-  const probe = [rustc, "-", "--crate-name", "___", "--print=file-names", "--crate-type", "bin", "--crate-type", "rlib", "--print=sysroot", "--print=split-debuginfo", "--print=crate-name", "--print=cfg"];
+  const t = o.variant.target;
+  const targetTriple = ({ "linux-x64": "x86_64-unknown-linux-gnu", "linux-x64-musl": "x86_64-unknown-linux-musl", "linux-aarch64": "aarch64-unknown-linux-gnu", "linux-aarch64-musl": "aarch64-unknown-linux-musl", "linux-x64-android": "x86_64-linux-android", "linux-aarch64-android": "aarch64-linux-android", "darwin-x64": "x86_64-apple-darwin", "darwin-aarch64": "aarch64-apple-darwin", "windows-x64": "x86_64-pc-windows-msvc", "windows-aarch64": "aarch64-pc-windows-msvc", "freebsd-x64": "x86_64-unknown-freebsd", "freebsd-aarch64": "aarch64-unknown-freebsd" } as Record<string, string>)[`${t.os}-${t.arch}${t.abi ? `-${t.abi}` : ""}`] ?? o.triple;
+  const cpuFlags = t.arch === "x64" ? ["-Ctarget-cpu=nehalem"] : ["-Ctarget-cpu=generic", "-Ctarget-feature=+crc", "-Ztune-cpu=ampere1"];
+  const probe = [rustc, "-", "--crate-name", "___", "--print=file-names", "-Crelocation-model=static", "-Cforce-frame-pointers=yes", "-Cllvm-args=-addrsig", "-Zshare-generics=y", ...cpuFlags, "--check-cfg=cfg(bun_asan)", "--check-cfg=cfg(bun_debug)", "--check-cfg=cfg(bun_codegen_embed)", "--cfg=bun_codegen_embed", "--check-cfg=cfg(socket_fault_injection)", "-Zlocation-detail=none", "-Clink-arg=-fuse-ld=lld", "-Clink-arg=-Qunused-arguments", "-Alinker_messages", "-Clinker-plugin-lto", "-Cembed-bitcode=yes", "-Cforce-unwind-tables=no", "--target", targetTriple, "--crate-type", "bin", "--crate-type", "rlib", "--crate-type", "dylib", "--crate-type", "cdylib", "--crate-type", "staticlib", "--crate-type", "proc-macro", "--print=sysroot", "--print=split-debuginfo", "--print=crate-name", "--print=cfg"];
+  write(join(out, "probe.sh"), `#!/bin/sh\n# the crashing command; $1 = path to stage2\nexec "$1/bin/rustc" ${probe.slice(1).map(a => `'${a}'`).join(" ")} < /dev/null\n`);
   let failures = 0;
-  // Run it a number of times: if the defect is in the rewritten code it fails every time; if it
-  // only shows under some runtime condition, repetition raises the odds.
-  for (let i = 0; i < 20; i++) {
+  for (const [i, lib] of [[0, "pre-BOLT"], ...Array.from({ length: 20 }, (_, k) => [k + 1, "instrumented"])] as [number, string][]) {
+    cpSync(join(out, lib === "pre-BOLT" ? name : `${name}.instrumented`), driver);
     const r = run(["sh", "-c", `${probe.map(a => `'${a}'`).join(" ")} < ${join(out, "empty.rs")} > ${join(out, `probe-${i}.out`)} 2>&1; echo $?`], { capture: true }).trim();
+    console.log(`probe ${i} (${lib}): exit ${r}`);
     if (r !== "0") {
-      failures++;
-      console.log(`probe ${i}: exit ${r}\n${run(["tail", "-30", join(out, `probe-${i}.out`)], { capture: true })}`);
+      if (lib === "instrumented") failures++;
+      console.log(run(["tail", "-40", join(out, `probe-${i}.out`)], { capture: true }));
     }
   }
-  write(join(out, "result.txt"), `instrumented ${name}: ${failures}/20 probe runs failed\n`);
+  write(join(out, "result.txt"), `instrumented ${name}: ${failures}/20 probe runs failed (probe.sh has the command)\n`);
   console.log(`rust-repro: instrumented ${name}: ${failures}/20 probe runs failed; libraries in ${out}`);
-  // Restore the pre-BOLT library so the build dir stays usable.
+  // Keep the whole stage2 (bin/rustc + lib/, pre-BOLT libraries) so later experiments on an arm64
+  // machine can rerun probes against differently rewritten libraries without rebuilding.
   cpSync(join(out, name), driver);
+  run(["tar", "-I", `zstd -10 -T${o.jobs}`, "-cf", join(out, "stage2.tar.zst"), "-C", join(build, o.triple), "stage2"]);
 }
