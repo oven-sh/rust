@@ -14,7 +14,7 @@ ARG CMAKE=3.30.5
 # (the training workload) additionally needs — the list scripts/bootstrap.sh in
 # oven-sh/bun installs on its CI image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg git xz-utils zstd unzip ninja-build python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev g++-10 libstdc++-10-dev libedit2 libncurses6 \
+      ca-certificates curl gnupg git xz-utils zstd unzip python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev g++-10 libstdc++-10-dev libedit2 libncurses6 \
       build-essential make nasm libtool ruby perl bison \
       libgmp-dev libmpfr-dev libmpc-dev flex \
     && rm -rf /var/lib/apt/lists/*
@@ -88,6 +88,12 @@ ENV ANDROID_NDK_ROOT=/opt/android-ndk
 RUN curl -fsSL --retry 8 --retry-delay 5 \
       https://github.com/Kitware/CMake/releases/download/v${CMAKE}/cmake-${CMAKE}-linux-$(uname -m).tar.gz \
     | tar -xz -C /usr/local --strip-components=1 && cmake --version
+# ninja: Bun's build files declare ninja_required_version 1.11 (validations); focal's is 1.10.
+ARG NINJA=1.13.2
+RUN curl -fsSL --retry 8 --retry-delay 5 https://github.com/ninja-build/ninja/archive/refs/tags/v${NINJA}.tar.gz | tar -xz -C /tmp \
+    && (cd /tmp/ninja-${NINJA} && python3 configure.py --bootstrap >/dev/null) \
+    && install -m 0755 /tmp/ninja-${NINJA}/ninja /usr/local/bin/ninja && rm -rf /tmp/ninja-${NINJA} \
+    && [ "$(ninja --version)" = "${NINJA}" ]
 
 # GCC, for the libstdc++.a / libgcc that get statically linked into rustc's
 # libLLVM.so and librustc_driver.so (--enable-llvm-static-stdcpp). As upstream's
