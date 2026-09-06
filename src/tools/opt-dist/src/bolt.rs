@@ -6,6 +6,18 @@ use crate::exec::cmd;
 use crate::training::BoltProfile;
 use crate::utils::io::copy_file;
 
+/// Where BOLT inputs are kept for offline reproduction when OPT_DIST_BOLT_SAVE_INPUTS is set:
+/// the pre-BOLT library, its instrumented version and (at optimize time) its merged profile,
+/// next to the other opt-artifacts. Off by default: they are several hundred MiB each.
+fn saved_inputs_dir(env: &Environment) -> anyhow::Result<Option<Utf8PathBuf>> {
+    if std::env::var_os("OPT_DIST_BOLT_SAVE_INPUTS").is_none() {
+        return Ok(None);
+    }
+    let dir = env.artifact_dir().join("bolt-inputs");
+    std::fs::create_dir_all(&dir)?;
+    Ok(Some(dir))
+}
+
 /// Instruments an artifact at the given `path` (in-place) with BOLT and then calls `func`.
 /// After this function finishes, the original file will be restored.
 pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
@@ -18,6 +30,12 @@ pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
     // By copying it, we break any existing hard links, so that they are not affected by the
     // instrumentation.
     let _backup_file = BackedUpFile::new(path)?;
+
+    let file_name = path.file_name().expect("BOLT input has a file name");
+    let inputs_dir = saved_inputs_dir(env)?;
+    if let Some(dir) = &inputs_dir {
+        copy_file(path, &dir.join(file_name))?;
+    }
 
     let instrumented_path = tempfile::NamedTempFile::new()?.into_temp_path();
 
@@ -40,6 +58,9 @@ pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
 
     // Copy the instrumented artifact over the original one
     copy_file(&instrumented_path, path)?;
+    if let Some(dir) = &inputs_dir {
+        copy_file(&instrumented_path, &dir.join(format!("{file_name}.instrumented")))?;
+    }
 
     // Run the function that will make use of the instrumented artifact.
     // The original file will be restored when `_backup_file` is dropped.
@@ -58,11 +79,34 @@ pub fn bolt_optimize(
     let temp_path = tempfile::NamedTempFile::new()?.into_temp_path();
     copy_file(path, &temp_path)?;
 
+    let file_name = path.file_name().expect("BOLT input has a file name");
+    if let Some(dir) = saved_inputs_dir(env)? {
+        copy_file(&profile.0, &dir.join(format!("{file_name}.fdata")))?;
+    }
+
     // FIXME: cdsplit in llvm-bolt is currently broken on AArch64, drop this once it's fixed upstream
     let split_strategy =
         if env.host_tuple().starts_with("aarch64") { "profile2" } else { "cdsplit" };
 
-    cmd(&[env.llvm_bolt().as_str()])
+    // llvm-bolt's output goes to a file next to the opt-artifacts and only a summary (exit status,
+    // wall time, peak RSS, line count) plus its tail reach the build log: an llvm-bolt that printed
+    // one error in an endless loop once filled the CI log pipe and stalled the whole builder with
+    // it. The run is also bounded by OPT_DIST_BOLT_TIMEOUT (default 45m; x86_64 takes ~2 min,
+    // aarch64 ~3).
+    let log = env.artifact_dir().join(format!("{file_name}.bolt.log"));
+    let timeout = std::env::var("OPT_DIST_BOLT_TIMEOUT").unwrap_or_else(|_| "45m".to_string());
+    const RUN_LOGGED: &str = r#"
+import os, resource, subprocess, sys, time
+log, argv = sys.argv[1], sys.argv[2:]
+t = time.time()
+with open(log, 'wb') as f:
+    r = subprocess.run(argv, stdout=f, stderr=subprocess.STDOUT)
+u = resource.getrusage(resource.RUSAGE_CHILDREN)
+print(f'[bolt] {argv[-1] if "-o" not in argv else argv[argv.index("-o") + 1]}: exit={r.returncode} wall={time.time()-t:.0f}s maxrss={u.ru_maxrss//1024}MiB, {os.path.getsize(log)} bytes of output in {log}', file=sys.stderr, flush=True)
+os.system(f"tail -c 200000 {log} | grep -v -E 'BOLT-INFO: (Starting|Finished) pass' | tail -60 >&2")
+sys.exit(r.returncode)
+"#;
+    cmd(&["python3", "-c", RUN_LOGGED, log.as_str(), "timeout", "--verbose", "-k", "60s", timeout.as_str(), env.llvm_bolt().as_str()])
         .arg(temp_path.display())
         .arg("-data")
         .arg(&profile.0)
@@ -93,8 +137,11 @@ pub fn bolt_optimize(
         .arg("-update-debug-sections")
         // Print optimization statistics
         .arg("-dyno-stats")
+        // Per-pass and per-phase timers
+        .arg("-time-opts")
+        .arg("-time-rewrite")
         .run()
-        .with_context(|| anyhow::anyhow!("Could not optimize {path} with BOLT"))?;
+        .with_context(|| anyhow::anyhow!("Could not optimize {path} with BOLT (its output: {log})"))?;
 
     Ok(())
 }
