@@ -230,6 +230,10 @@ export function plainConfigureArgs(o: Options): string[] {
     `--set target.${t}.ar=${w.ar}`,
     `--set target.${t}.ranlib=${w.ranlib}`,
     ...(isWindows(o) ? [`--set llvm.build-config.CMAKE_ASM_MASM_COMPILER=${join(w.dir, o.host.endsWith("aarch64") ? "armasm64" : "ml64")}`] : []),
+    // CMake's MSVC link step runs mt to embed a manifest unless told not to (the same switch, for
+    // the same reason, as LLVM's WinMsvc.cmake): there is no mt here, and CMake before 3.31 does
+    // not look for llvm-mt.
+    ...(isWindows(o) ? ["--set llvm.ldflags=/manifest:no"] : []),
     "--release-channel=nightly",
     "--set llvm.download-ci-llvm=false",
     "--set llvm.targets=AArch64;X86",
