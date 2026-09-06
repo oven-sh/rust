@@ -17,7 +17,7 @@ export const RECIPE_VERSION = 1;
  * branch that moves it there (main plus what the newer clang/lld need); a stale ref only makes
  * the profile slightly less representative.
  */
-export const BUN_REF = "da27d59573c20e49ba637ff3543b779cfa2d8edf";
+export const BUN_REF = "3e2b373cc53e631f970aa897a2ede481c28898b0";
 
 export type { Builder, Host } from "./variants.ts";
 
