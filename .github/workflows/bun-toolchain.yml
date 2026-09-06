@@ -1,0 +1,290 @@
+name: bun-toolchain
+
+# rustc/cargo + clang/lld built from this branch and src/llvm-project, PGO/BOLT-trained on
+# compiling Bun — one toolchain per Bun build configuration ("variant": each oven-sh/bun CI
+# lane, plus `dev` for the local debug loop; bun/lib/variants.ts). See bun/README.md.
+#
+#   plan                which (host, variant) pairs to build (bun/toolchain.ts matrix)
+#   image               the build environment (bun/Dockerfile), per host
+#   llvm-instrumented   per host: clang stage 1 + the PGO-instrumented clang/lld, shared by
+#                       every variant on that host
+#   llvm                per (host, variant): train on the variant's Bun build → PGO clang/lld →
+#                       BOLT → bun-toolchain-<host>-<variant>-llvm.tar.zst
+#   rust                per (host, variant): rust-lang's dist pipeline (PGO rustc, PGO+BOLT
+#                       libLLVM) trained on the variant → bun-toolchain-<host>-<variant>-rust.tar.zst
+#   release             attaches every tarball + its toolchain-{llvm,rust}.json to one release
+#
+# Left to right; llvm and rust for a variant run side by side.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bun-ref:
+        description: oven-sh/bun commit to train on (default is pinned in bun/lib/options.ts)
+        required: false
+      variants:
+        description: only these variants, comma-separated (default is all of bun/lib/variants.ts)
+        required: false
+      halves:
+        description: llvm, rust or llvm,rust (default both)
+        required: false
+      skip-bolt:
+        type: boolean
+        default: false
+      extra-args:
+        description: extra bun/toolchain.ts options for every job (e.g. --skip-bolt)
+        required: false
+  push:
+    branches: ["nightly-*-bun"]
+    paths: ["bun/**", "!bun/README.md", "!bun/measurements/**", ".github/workflows/bun-toolchain.yml", "src/tools/opt-dist/**", "src/llvm-project"]
+
+# A push supersedes the previous push's run on the branch; manually dispatched runs (subsets of
+# variants/halves) are their own groups and neither cancel nor get cancelled by anything else.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'push' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  TOOLCHAIN_ARGS: ${{ inputs.bun-ref && format('--bun-ref={0}', inputs.bun-ref) || '' }} ${{ inputs.skip-bolt && '--skip-bolt' || '' }} ${{ inputs.extra-args }}
+  # bun/Dockerfile, built once per Dockerfile change and kept in GHCR; jobs append :<dockerfile hash>-<host>.
+  IMAGE: ghcr.io/${{ github.repository_owner }}/bun-toolchain-env
+  # As the runner's user, so the checkout is trusted by git and outputs are owned by the steps
+  # that upload them; HOME holds cargo/npm/bun caches.
+  IN_CONTAINER: >-
+    docker run --rm -v $PWD:/checkout -w /checkout
+    --user $UID:$GID -e HOME=/checkout/obj/home
+    -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro
+    bun-toolchain-env
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    # pairs: the (host, variant) jobs; hosts: the hosts those need; halves: llvm and/or rust.
+    outputs:
+      pairs: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).pairs) }}
+      hosts: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).hosts) }}
+      llvm: ${{ contains(fromJSON(steps.matrix.outputs.matrix).halves, 'llvm') }}
+      rust: ${{ contains(fromJSON(steps.matrix.outputs.matrix).halves, 'rust') }}
+      release: ${{ steps.release.outputs.number }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { sparse-checkout: bun, fetch-depth: 1 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 26 }
+      - id: matrix
+        run: echo "matrix=$(node bun/toolchain.ts matrix ${{ inputs.variants && format('--variants={0}', inputs.variants) || '' }} ${{ inputs.halves && format('--halves={0}', inputs.halves) || '' }})" | tee -a "$GITHUB_OUTPUT"
+      # Releases are bun-toolchain-<branch>-<commit>-r<N>: numbered r1, r2, … per branch (a branch
+      # is one rustc nightly + its LLVM), in publication order. A run for a commit that already has
+      # a release (a rerun, or a dispatch filling in variants) publishes into it under its number.
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prefix="bun-toolchain-${GITHUB_REF_NAME}-"
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[].tag_name | select(startswith(\"$prefix\") and test(\"-r[0-9]+\$\"))")
+          tag=$(grep -E "^${prefix}${GITHUB_SHA::8}-r[0-9]+$" <<<"$existing" | head -n1 || true)
+          if [ -n "$tag" ]; then
+            n=${tag##*-r}
+          else
+            last=$(sed -nE "s/^.*-r([0-9]+)$/\1/p" <<<"$existing" | sort -n | tail -n1)
+            n=$(( ${last:-0} + 1 )); tag="${prefix}${GITHUB_SHA::8}-r${n}"
+          fi
+          echo "number=$n" | tee -a "$GITHUB_OUTPUT"; echo "tag=$tag" | tee -a "$GITHUB_OUTPUT"
+
+  # The build environment image. Pushing needs the workflow token to be allowed to publish
+  # packages; if it is not, the other jobs fall back to building it locally.
+  image:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
+    name: image ${{ matrix.host }}
+    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { sparse-checkout: bun, fetch-depth: 1 }
+      - name: Log in to ghcr.io
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push (if missing)
+        id: build
+        run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          if docker manifest inspect "$tag" >/dev/null 2>&1; then echo "$tag exists"; exit 0; fi
+          docker build -t "$tag" bun
+          docker push "$tag" && echo "pushed=true" >> "$GITHUB_OUTPUT" || echo "::warning::could not push $tag; later jobs will rebuild the image"
+      - name: Delete superseded images for this host
+        if: steps.build.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          keep="${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          gh api --paginate "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions" \
+            --jq '.[] | select((.metadata.container.tags | length == 0) or ([.metadata.container.tags[] | endswith("-${{ matrix.host }}")] | any)) | select(.metadata.container.tags | index("'"$keep"'") | not) | .id' |
+          while read -r id; do
+            echo "deleting package version $id"
+            gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions/$id" || true
+          done
+
+  llvm-instrumented:
+    needs: [plan, image]
+    if: needs.plan.outputs.llvm == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
+    name: llvm-instrumented ${{ matrix.host }}
+    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { submodules: false, fetch-depth: 1 }
+      - name: Fetch src/llvm-project
+        run: git submodule update --init --depth=1 src/llvm-project
+      - name: Container image
+        run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
+      - name: Stage 1 + instrumented clang/lld
+        run: mkdir -p obj/home && GID=$(id -g) && eval "$IN_CONTAINER node bun/toolchain.ts llvm-instrumented $TOOLCHAIN_ARGS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: llvm-instrumented-${{ matrix.host }}
+          path: obj/bun-toolchain/llvm-instrumented-${{ matrix.host }}.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+
+  llvm:
+    needs: [plan, llvm-instrumented]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    name: llvm ${{ matrix.variant }} (${{ matrix.host }})
+    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { submodules: false, fetch-depth: 1 }
+      - name: Fetch src/llvm-project
+        run: git submodule update --init --depth=1 src/llvm-project
+      - name: Container image
+        run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { name: "llvm-instrumented-${{ matrix.host }}", path: obj/bun-toolchain }
+      - name: Train on ${{ matrix.variant }}, final clang/lld, BOLT, package
+        run: |
+          mkdir -p obj/home && GID=$(id -g)
+          eval "$IN_CONTAINER node bun/toolchain.ts llvm --variant=${{ matrix.variant }} $TOOLCHAIN_ARGS"
+          eval "$IN_CONTAINER node bun/toolchain.ts package --variant=${{ matrix.variant }} --release=${{ needs.plan.outputs.release }} $TOOLCHAIN_ARGS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bun-toolchain-${{ matrix.host }}-${{ matrix.variant }}-llvm
+          path: |
+            obj/bun-toolchain/out/*-llvm.tar.zst
+            obj/bun-toolchain/out/*-llvm/toolchain-llvm.json
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+      # The merged PGO profile the final clang was built with, for inspection (not a release asset).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: profiles-${{ matrix.host }}-${{ matrix.variant }}-llvm
+          path: obj/bun-toolchain/llvm-final/clang.profdata
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+
+  rust:
+    needs: [plan, image]
+    if: needs.plan.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    name: rust ${{ matrix.variant }} (${{ matrix.host }})
+    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    # A healthy job is under 2h30 (x86_64 with BOLT ~1h30, aarch64 ~1h25, +~40 min with BOLT); past
+    # that it is stuck, and timing out (unlike cancelling) still runs the artifact uploads below.
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { submodules: false, fetch-depth: 1 }
+      - name: Fetch src/llvm-project
+        run: git submodule update --init --depth=1 src/llvm-project
+      - name: Container image
+        run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
+      - name: rust-lang dist pipeline trained on ${{ matrix.variant }}, package
+        run: |
+          mkdir -p obj/home && GID=$(id -g)
+          eval "$IN_CONTAINER node bun/toolchain.ts rust --variant=${{ matrix.variant }} $TOOLCHAIN_ARGS"
+          eval "$IN_CONTAINER node bun/toolchain.ts package --variant=${{ matrix.variant }} --release=${{ needs.plan.outputs.release }} $TOOLCHAIN_ARGS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bun-toolchain-${{ matrix.host }}-${{ matrix.variant }}-rust
+          path: |
+            obj/bun-toolchain/out/*-rust.tar.zst
+            obj/bun-toolchain/out/*-rust/toolchain-rust.json
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+      # opt-dist's merged PGO profiles (rustc, rustdoc, libLLVM) and BOLT fdata + inputs, for
+      # inspection — also when the job failed, which is when they are wanted most.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: profiles-${{ matrix.host }}-${{ matrix.variant }}-rust
+          path: |
+            obj/bun-toolchain/rust/opt-artifacts/*.profdata
+            obj/bun-toolchain/rust/opt-artifacts/*.fdata
+            obj/bun-toolchain/rust/opt-artifacts/bolt-inputs/*
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+
+  release:
+    needs: [plan, llvm, rust]
+    # A half that plan left out is "skipped", which would otherwise skip this too; and at least one
+    # half must have actually run.
+    if: ${{ !cancelled() && !failure() && (needs.llvm.result == 'success' || needs.rust.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: bun-toolchain-*
+          path: artifacts
+      # Each artifact is named like its tarball and holds <name>.tar.zst + <name>/toolchain-{llvm,rust}.json
+      # (upload-artifact roots them at their common directory, obj/bun-toolchain/out).
+      - name: Collect assets
+        run: |
+          mkdir assets
+          for dir in artifacts/bun-toolchain-*/; do
+            name=$(basename "$dir")
+            cp "$dir/$name.tar.zst" assets/
+            cp "$dir/$name"/toolchain-*.json "assets/$name.json"
+          done
+          ls -l assets
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.plan.outputs.tag }}"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$tag" \
+              --notes "Release r${{ needs.plan.outputs.release }} of the Bun toolchain on ${GITHUB_REF_NAME}: rustc/cargo + clang/lld for building Bun, built from ${GITHUB_SHA} by bun/toolchain.ts. One pair of tarballs per Bun build configuration: bun-toolchain-<host>-<variant>-{llvm,rust}.tar.zst; the .json next to each says what it was built and trained from."
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber assets/*
