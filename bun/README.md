@@ -19,16 +19,26 @@ The exact upstream arguments and each deviation are spelled out in
 this branch relative to the upstream nightly:
 `https://github.com/oven-sh/rust/compare/nightly-YYYY-MM-DD...nightly-YYYY-MM-DD-bun`.
 
-## Variants
+## Hosts and variants
 
-A toolchain is trained on exactly one Bun build configuration, its **variant**
-([`lib/variants.ts`](lib/variants.ts)): every PGO and BOLT phase is one clean build of
-that configuration.
+A toolchain runs on a **host** and is built as one **variant**
+([`lib/variants.ts`](lib/variants.ts)). A trained variant is PGO/BOLT-profiled on exactly
+one Bun build configuration — every PGO and BOLT phase is one clean build of it. A plain
+variant is the upstream release build without training, for hosts the pipeline (Linux
+runners) cannot execute: it is cross-compiled from linux-x64 with the builder's own clang,
+lld and the platform SDK that oven-sh/bun's cross builds use ([`lib/cross.ts`](lib/cross.ts),
+[`lib/sdks.ts`](lib/sdks.ts)).
 
-- `ci-<os>-<arch>[-<abi>|-asan]` — one per oven-sh/bun CI build lane (`buildPlatforms`
-  in its `.buildkite/ci.mjs`, with the flags its `getBuildArgs` passes). All of them build
-  on the linux-aarch64 host, as Bun's CI does.
-- `dev` — `bun bd` (a debug, ASan build for the host), on linux-x64 and linux-aarch64. For developer machines.
+| host | variants |
+|---|---|
+| linux-aarch64 | `ci-<os>-<arch>[-<abi>\|-asan]` — one per oven-sh/bun CI build lane (`buildPlatforms` in its `.buildkite/ci.mjs`, with the flags its `getBuildArgs` passes; every lane builds on linux-aarch64), trained; `dev`, trained |
+| linux-x64 | `dev`, trained |
+| darwin-aarch64 | `dev`, plain (cross-compiled) |
+| windows-x64 | `dev`, plain (cross-compiled) |
+| windows-aarch64 | `dev`, plain (cross-compiled) |
+
+`dev` is `bun bd` — a debug, ASan build for the machine it runs on; for developer machines,
+so that every platform Bun is developed on can use the same compiler commits CI uses.
 
 ## Output
 
@@ -56,10 +66,12 @@ The two trees do not overlap; extract both into one directory and point Bun's bu
 with `BUN_TOOLCHAIN_LLVM` / `BUN_TOOLCHAIN_RUST` (`scripts/build/tools.ts` in oven-sh/bun).
 `toolchain-*.json` records the commits, the variant, and the configure / cmake arguments.
 
-To run it a host needs glibc ≥ 2.31, GCC ≥ 10's libstdc++ and zlib (Ubuntu 20.04 / Debian 11
+On Linux, to run it a host needs glibc ≥ 2.31, GCC ≥ 10's libstdc++ and zlib (Ubuntu 20.04 / Debian 11
 or newer). rustc's libLLVM.so links libstdc++ and zstd statically; clang and lld link
 libstdc++ and zlib dynamically, as the respective upstream release binaries do, and zstd
-and libxml2 statically.
+and libxml2 statically. The macOS toolchain targets macOS ≥ 13 and depends only on system
+libraries (libSystem, libc++, libz, libxml2, and for cargo libcurl — as rustup's does); the
+Windows one links the static MSVC runtime and depends only on system DLLs.
 
 ## Building it
 
