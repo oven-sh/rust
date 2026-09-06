@@ -14,7 +14,7 @@ import { chmodSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
 import { NO_JUMP_TABLES } from "./llvm.ts";
-import { isDarwin, MACOS_DEPLOYMENT_TARGET, wrappers } from "./cross.ts";
+import { isDarwin, isWindows, MACOS_DEPLOYMENT_TARGET, wrappers } from "./cross.ts";
 import { macosSdk } from "./sdks.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
@@ -229,6 +229,7 @@ export function plainConfigureArgs(o: Options): string[] {
     `--set target.${t}.linker=${w.linker}`,
     `--set target.${t}.ar=${w.ar}`,
     `--set target.${t}.ranlib=${w.ranlib}`,
+    ...(isWindows(o) ? [`--set llvm.build-config.CMAKE_ASM_MASM_COMPILER=${join(w.dir, o.host.endsWith("aarch64") ? "armasm64" : "ml64")}`] : []),
     "--release-channel=nightly",
     "--set llvm.download-ci-llvm=false",
     "--set llvm.targets=AArch64;X86",
@@ -239,7 +240,10 @@ export function plainConfigureArgs(o: Options): string[] {
     // rustc itself shells out to rust-objcopy from its sysroot (stripping, on Apple targets), so
     // the LLVM tools have to be staged even though the llvm-tools component is not shipped.
     "--set rust.llvm-tools=true",
-    "--set rust.lto=thin",
+    // as upstream's dist for the host: ThinLTO across rustc_driver and jemalloc on macOS
+    // (dist-aarch64-apple), neither on Windows (dist-x86_64-msvc; statics behind the DLL boundary
+    // do not survive dylib LTO there)
+    ...(isWindows(o) ? [] : ["--set rust.lto=thin", "--set rust.jemalloc"]),
     "--set rust.codegen-units=1",
     "--set rust.codegen-backends=llvm",
     "--set build.extended=true",
@@ -264,8 +268,16 @@ export function buildRustPlain(o: Options): void {
   mkdir(p.rustBuild);
   const env: Record<string, string> = {
     RUST_BOOTSTRAP_CONFIG: join(p.rustBuild, "bootstrap.toml"),
+    // the host's binutils under their conventional names (lib/cross.ts wrappers), for the CMake
+    // and cc-rs invocations bootstrap makes that look tools up by name
+    PATH: `${wrappers(o).dir}:${process.env.PATH}`,
     // cc-rs, for the C parts of std/cargo's native deps: where the SDK is (it would ask xcrun).
     ...(isDarwin(o) ? { SDKROOT: macosSdk(o), MACOSX_DEPLOYMENT_TARGET: MACOS_DEPLOYMENT_TARGET } : {}),
+    // bootstrap exports CC_<triple> to build scripts for every target but *-msvc (there it expects
+    // cc-rs to find Visual Studio on the machine); cc-rs takes the target-scoped variables.
+    ...(isWindows(o) ? (t => ({ [`CC_${t}`]: wrappers(o).cc, [`CXX_${t}`]: wrappers(o).cxx, [`AR_${t}`]: wrappers(o).ar }))(o.triple.replaceAll("-", "_")) : {}),
+    // rustc_driver/rustc embed a version resource; their build script wants rc.exe (compiler/rustc_windows_rc).
+    ...(isWindows(o) ? { RUSTC_WINDOWS_RC: join(wrappers(o).dir, "llvm-rc") } : {}),
   };
   remove(env.RUST_BOOTSTRAP_CONFIG!);
   run([join(o.checkout, "configure"), ...plainConfigureArgs(o)], { cwd: p.rustBuild, env });

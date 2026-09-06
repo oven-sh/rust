@@ -78,8 +78,17 @@ export function wrappers(o: Options): { dir: string; cc: string; cxx: string; li
   // linker flavor off the name (lld-link → MSVC-style arguments).
   const arch = o.host.endsWith("aarch64") ? "arm64" : "x64";
   const clangCl = script(`${o.triple}-clang-cl`, [tool(o, "clang-cl"), `--target=${clangTarget(o)}`, "/winsysroot", winSysroot(o), "-fuse-ld=lld", "-Wno-unused-command-line-argument"]);
-  const lldLink = script("lld-link", [tool(o, "lld-link"), `/winsysroot:${winSysroot(o)}`, `/machine:${arch}`]);
+  // LNK4099: the xwin sysroot has no PDBs for the CRT's own objects; links that treat warnings
+  // as errors (rustc.exe's, for its manifest) would fail on that alone.
+  const lldArgs = [tool(o, "lld-link"), `/winsysroot:${winSysroot(o)}`, `/machine:${arch}`, "/ignore:4099"];
+  script("lld-link", lldArgs);
+  // rustc's linker: from a name ending in "lld-link" it infers the multiplexed lld driver and
+  // prepends `-flavor link`, which lld-link itself rejects; "<triple>-link" reads as a plain
+  // MSVC-style linker (the target's default flavor), which is what this is.
+  const lldLink = script(`${o.triple}-link`, lldArgs);
   for (const t of ["llvm-lib", "llvm-rc", "llvm-ml", "llvm-mt", "llvm-cvtres", "llvm-ranlib", "llvm-nm"]) script(t, [tool(o, t)]);
+  // CMake's MASM support looks for ml64/ml (armasm64 on arm64) by name; llvm-ml is the drop-in.
+  script(arch === "x64" ? "ml64" : "armasm64", [tool(o, "llvm-ml"), ...(arch === "x64" ? ["-m64"] : [])]);
   script("clang-cl", [tool(o, "clang-cl"), `--target=${clangTarget(o)}`, "/winsysroot", winSysroot(o), "-fuse-ld=lld", "-Wno-unused-command-line-argument"]);
   return { dir, cc: clangCl, cxx: clangCl, linker: lldLink, ar: join(dir, "llvm-lib"), ranlib: join(dir, "llvm-ranlib") };
 }
