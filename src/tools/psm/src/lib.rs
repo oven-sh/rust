@@ -9,6 +9,9 @@
 //! consider one of the safe abstractions over this crate such as `stacker`. Another good place to
 //! look at is the crates.io’s reverse dependency list.
 
+// Vendored into the rustc workspace (see the root Cargo.toml): the in-tree lint flags apply here,
+// which the registry copy is exempt from.
+#![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_macros)]
 #![no_std]
 
