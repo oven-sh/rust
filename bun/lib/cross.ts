@@ -60,10 +60,11 @@ export function wrappers(o: Options): { dir: string; cc: string; cxx: string; li
     // -fuse-ld=lld matters when the wrapper links; on a compile it is unused, which clang would warn about.
     const flags = [...targetFlags(o), "-fuse-ld=lld", "-Wno-unused-command-line-argument"];
     const cc = script(`${o.triple}-clang`, [tool(o, "clang"), ...flags]);
+    const cxx = script(`${o.triple}-clang++`, [tool(o, "clang++"), ...flags]);
     return {
       dir,
       cc,
-      cxx: script(`${o.triple}-clang++`, [tool(o, "clang++"), ...flags]),
+      cxx,
       // rustc picks the linker flavor from the file name: a *clang name gets cc-style arguments
       // (which the driver turns into ld64.lld ones); a *ld name would get raw ld64 arguments.
       linker: cc,

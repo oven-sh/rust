@@ -230,6 +230,10 @@ export function plainConfigureArgs(o: Options): string[] {
     `--set target.${t}.ar=${w.ar}`,
     `--set target.${t}.ranlib=${w.ranlib}`,
     ...(isWindows(o) ? [`--set llvm.build-config.CMAKE_ASM_MASM_COMPILER=${join(w.dir, o.host.endsWith("aarch64") ? "armasm64" : "ml64")}`] : []),
+    // The patched psm (root Cargo.toml [patch.crates-io], needed for aarch64-pc-windows-msvc) is a
+    // path dependency, which puts it under the workspace's deny-warnings; its code has lint
+    // warnings upstream never sees because registry crates are exempt.
+    ...(isWindows(o) ? ["--set rust.deny-warnings=false"] : []),
     "--release-channel=nightly",
     "--set llvm.download-ci-llvm=false",
     "--set llvm.targets=AArch64;X86",
