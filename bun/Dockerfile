@@ -124,6 +124,17 @@ RUN { curl -fsSL --retry 3 https://ftpmirror.gnu.org/gnu/gcc/gcc-${GCC}/gcc-${GC
     && dirname "$(/opt/gcc/bin/gcc -print-file-name=libstdc++.so.6)" > /etc/ld.so.conf.d/00-opt-gcc.conf && ldconfig \
     && ldconfig -p | grep -m1 'libstdc++.so.6 ' | grep -q /opt/gcc
 
+# libxml2 for lld-link's manifest merging and llvm-mt — in the clang/lld we ship and in the host
+# toolchain below (it links the Windows-hosted toolchains, whose rustc.exe embeds a manifest).
+# Static and without ICU/lzma so nothing depends on a host libxml2 soname (2.14 renamed it).
+ARG LIBXML2=2.9.14
+RUN curl -fsSL --retry 8 https://download.gnome.org/sources/libxml2/${LIBXML2%.*}/libxml2-${LIBXML2}.tar.xz | tar -xJ -C /tmp \
+    && cd /tmp/libxml2-${LIBXML2} \
+    && CFLAGS="-O2 -fPIC" ./configure --prefix=/opt/libxml2 --enable-static --disable-shared \
+         --without-python --without-icu --without-lzma --without-zlib --without-http --without-ftp -q >/dev/null \
+    && make -j"$(nproc)" -s >/dev/null && make -s install >/dev/null \
+    && cd / && rm -rf /tmp/libxml2-${LIBXML2} && test -f /opt/libxml2/lib/libxml2.a
+
 # Host compiler for stage 1 of both builds, and llvm-profdata / llvm-bolt / merge-fdata for
 # the PGO/BOLT steps: built from our src/llvm-project (oven-sh/llvm-project, the commit the
 # submodule points at — so its llvm-bolt carries our BOLT fixes), the way upstream's
@@ -140,6 +151,7 @@ RUN mkdir /tmp/llvm && curl -fsSL --retry 8 https://github.com/oven-sh/llvm-proj
          -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/llvm \
          -DLLVM_ENABLE_PROJECTS="clang;lld;bolt" -DLLVM_ENABLE_RUNTIMES=compiler-rt \
          -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+         -DLLVM_ENABLE_LIBXML2=FORCE_ON -DCMAKE_PREFIX_PATH=/opt/libxml2 -DLIBXML2_LIBRARY=/opt/libxml2/lib/libxml2.a -DLIBXML2_INCLUDE_DIR=/opt/libxml2/include/libxml2 \
          -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF \
          -DCOMPILER_RT_BUILD_XRAY=OFF -DCOMPILER_RT_BUILD_MEMPROF=OFF -DCOMPILER_RT_BUILD_CTX_PROFILE=OFF -DCOMPILER_RT_BUILD_LIBFUZZER=OFF >/dev/null \
     && { ninja -C /tmp/llvm/build install >/tmp/llvm-build.log 2>&1 || { tail -200 /tmp/llvm-build.log; exit 1; }; } \
@@ -169,15 +181,6 @@ RUN curl -fsSL --retry 8 --retry-delay 5 https://github.com/facebook/zstd/releas
     && CFLAGS=-fPIC make -C /tmp/zstd-${ZSTD} -j"$(nproc)" >/dev/null && make -C /tmp/zstd-${ZSTD} install >/dev/null \
     && rm -rf /tmp/zstd-${ZSTD} && ldconfig
 
-# libxml2 for lld (Windows manifest merging) and llvm-mt, static and without ICU/lzma so
-# the shipped binaries do not depend on the host's libxml2 soname (2.14 renamed it).
-ARG LIBXML2=2.9.14
-RUN curl -fsSL --retry 8 https://download.gnome.org/sources/libxml2/${LIBXML2%.*}/libxml2-${LIBXML2}.tar.xz | tar -xJ -C /tmp \
-    && cd /tmp/libxml2-${LIBXML2} \
-    && CFLAGS="-O2 -fPIC" ./configure --prefix=/opt/libxml2 --enable-static --disable-shared \
-         --without-python --without-icu --without-lzma --without-zlib --without-http --without-ftp -q >/dev/null \
-    && make -j"$(nproc)" -s >/dev/null && make -s install >/dev/null \
-    && cd / && rm -rf /tmp/libxml2-${LIBXML2} && test -f /opt/libxml2/lib/libxml2.a
 
 # mimalloc, linked statically into the clang and lld we ship (bun/lib/llvm.ts) in place of
 # glibc malloc. Built as the single override object so that putting it on the link line
