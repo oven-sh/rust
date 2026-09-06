@@ -255,7 +255,6 @@ export function plainConfigureArgs(o: Options): string[] {
     "--set build.optimized-compiler-builtins",
     "--enable-cargo-native-static",
     "--enable-locked-deps",
-    "--disable-manage-submodules",
     "--set build.print-step-timings",
     "--dist-compression-formats=xz",
   ].flatMap(a => (a.startsWith("--set ") ? ["--set", a.slice("--set ".length)] : [a]));
