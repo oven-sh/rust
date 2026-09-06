@@ -240,11 +240,10 @@ export function plainConfigureArgs(o: Options): string[] {
     // rustc itself shells out to rust-objcopy from its sysroot (stripping, on Apple targets), so
     // the LLVM tools have to be staged even though the llvm-tools component is not shipped.
     "--set rust.llvm-tools=true",
-    // as upstream's dist for the host: ThinLTO across rustc_driver on macOS (dist-aarch64-apple),
-    // not on Windows (dist-x86_64-msvc; statics behind the DLL boundary do not survive dylib LTO
-    // there). Unlike dist-aarch64-apple, no jemalloc yet: cross-compiled from Linux its zone
-    // allocator hooks (je_zone_register) do not get built, so rustc uses the system allocator.
-    ...(isWindows(o) ? [] : ["--set rust.lto=thin"]),
+    // as upstream's dist for the host: ThinLTO across rustc_driver and jemalloc on macOS
+    // (dist-aarch64-apple), neither on Windows (dist-x86_64-msvc; statics behind the DLL boundary
+    // do not survive dylib LTO there)
+    ...(isWindows(o) ? [] : ["--set rust.lto=thin", "--set rust.jemalloc"]),
     "--set rust.codegen-units=1",
     "--set rust.codegen-backends=llvm",
     "--set build.extended=true",

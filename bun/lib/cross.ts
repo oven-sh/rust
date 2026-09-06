@@ -61,6 +61,12 @@ export function wrappers(o: Options): { dir: string; cc: string; cxx: string; li
     const flags = [...targetFlags(o), "-fuse-ld=lld", "-Wno-unused-command-line-argument"];
     const cc = script(`${o.triple}-clang`, [tool(o, "clang"), ...flags]);
     const cxx = script(`${o.triple}-clang++`, [tool(o, "clang++"), ...flags]);
+    // autoconf builds in cargo build scripts (jemalloc's) look tools up as <triple>-<tool> and
+    // otherwise fall back to the builder's binutils, which cannot read Mach-O: jemalloc derives
+    // its private symbol names (je_zone_register among them) from `nm` over its own objects.
+    for (const t of ["nm", "ar", "ranlib", "strip", "otool", "install_name_tool", "libtool"]) {
+      script(`${o.triple}-${t}`, [tool(o, t === "libtool" ? "llvm-libtool-darwin" : t === "install_name_tool" ? "llvm-install-name-tool" : `llvm-${t}`)]);
+    }
     return {
       dir,
       cc,
