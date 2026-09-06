@@ -270,6 +270,27 @@ fn main() {
             continue;
         }
 
+        // Cross-compiling to an MSVC target from elsewhere: llvm-config is the host's and speaks
+        // GNU-style flags, the compiler for the target (clang-cl) speaks MSVC-style ones.
+        if is_crossed && target.contains("msvc") && !host.contains("msvc") {
+            match &flag[..] {
+                f if f.starts_with("-std=") => {
+                    cfg.flag(format!("/std:{}", &f["-std=".len()..]));
+                }
+                "-fno-exceptions" => {
+                    cfg.flag("/EHs-c-");
+                }
+                "-fno-rtti" => {
+                    cfg.flag("/GR-");
+                }
+                f if f.starts_with("-D_GNU_SOURCE") || f.starts_with("-D_GLIBCXX") || f.starts_with("-f") => {}
+                f => {
+                    cfg.flag(f);
+                }
+            }
+            continue;
+        }
+
         cfg.flag(&*flag);
     }
 

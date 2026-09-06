@@ -378,10 +378,12 @@ than building it.
             }
         }
 
-        if need_cmake && target.is_msvc() {
+        if need_cmake && target.is_msvc() && !build.ninja() {
             // There are three builds of cmake on windows: MSVC, MinGW, and
             // Cygwin. The Cygwin build does not have generators for Visual
-            // Studio, so detect that here and error.
+            // Studio, so detect that here and error. (With ninja, the Visual
+            // Studio generators are not used — and a cross build from another
+            // OS has none.)
             let out =
                 command("cmake").arg("--help").run_in_dry_run().run_capture_stdout(&build).stdout();
             if !out.contains("Visual Studio") {
