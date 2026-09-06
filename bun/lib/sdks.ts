@@ -5,7 +5,7 @@
 //   Windows  scripts/build/winsysroot.ts (xwin)     → MSVC CRT + Windows SDK in /winsysroot layout
 // --macos-sdk / --win-sysroot point at an existing one instead.
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { checkoutBun } from "./bun-build.ts";
 import { mkdir, remove } from "./fs.ts";
@@ -36,9 +36,9 @@ export function macosSdk(o: Options): string {
     remove(staging);
     mkdir(paths(o).sdks);
     run(["bun", join(bunCheckout(o), "scripts", "build", "xmac.mjs"), "splat", "--accept-license", "--sdk-only", "--release", MACOS_SDK_CLT_RELEASE!, "--sdk", MACOS_SDK_VERSION!, "--output", staging, "--cache-dir", join(paths(o).sdks, "xmac")]);
-    // xmac writes <staging>/MacOSX<version>.sdk (or the SDK contents directly); accept either.
-    const inner = existsSync(join(staging, "SDKSettings.json")) ? staging : join(staging, readdirSync(staging).find(e => e.endsWith(".sdk")) ?? "");
-    if (!existsSync(join(inner, "SDKSettings.json"))) throw new Error(`xmac produced no SDK under ${staging}`);
+    // xmac lays the package out as <staging>/SDKs/MacOSX<version>.sdk (macos-sdk.ts moves that into place the same way).
+    const inner = join(staging, "SDKs", `MacOSX${MACOS_SDK_VERSION}.sdk`);
+    if (!existsSync(join(inner, "SDKSettings.json"))) throw new Error(`xmac did not produce ${inner}`);
     run(["mv", inner, dir]);
     remove(staging);
   }
