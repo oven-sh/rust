@@ -14,10 +14,17 @@ ARG CMAKE=3.30.5
 # (the training workload) additionally needs — the list scripts/bootstrap.sh in
 # oven-sh/bun installs on its CI image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg git xz-utils zstd unzip python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev g++-10 libstdc++-10-dev libedit2 libncurses6 \
+      ca-certificates curl gnupg xz-utils zstd unzip python3 pkg-config libssl-dev zlib1g-dev file binutils libc6-dev g++-10 libstdc++-10-dev libedit2 libncurses6 \
       build-essential make nasm libtool ruby perl bison \
       libgmp-dev libmpfr-dev libmpc-dev flex \
     && rm -rf /var/lib/apt/lists/*
+# git: Bun's build fetches vendored sources with `git fetch --filter=blob:none` into a fresh
+# repository, which focal's git 2.25 refuses ("--filter can only be used when
+# extensions.partialClone is set"); the git-core PPA carries current git for focal.
+RUN echo "deb http://ppa.launchpad.net/git-core/ppa/ubuntu focal main" > /etc/apt/sources.list.d/git-core.list \
+    && curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xE1DD270288B4E6030699E45FA1715D88E1DF1F24" | gpg --dearmor -o /etc/apt/trusted.gpg.d/git-core-ppa.gpg \
+    && apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+    && git --version
 # Cross gcc + glibc for the other Linux architecture, so the LLVM build can produce
 # compiler-rt (ASAN etc.) for it: Bun's CI builds x64 and arm64 Linux from one host.
 RUN apt-get update && apt-get install -y --no-install-recommends \
