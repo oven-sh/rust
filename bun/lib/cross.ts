@@ -93,7 +93,7 @@ export function wrappers(o: Options): { dir: string; cc: string; cxx: string; li
   return { dir, cc: clangCl, cxx: clangCl, linker: lldLink, ar: join(dir, "llvm-lib"), ranlib: join(dir, "llvm-ranlib") };
 }
 
-/** The CMake toolchain file LLVM (and compiler-rt) are configured with for the host. */
+/** The CMake toolchain file LLVM and compiler-rt are configured with for the host. */
 export function cmakeToolchainFile(o: Options): string {
   const p = paths(o);
   mkdir(p.cross);
@@ -134,7 +134,7 @@ export function cmakeToolchainFile(o: Options): string {
     throw new Error(`not a cross host: ${o.host}`);
   }
   lines.push(
-    set("CMAKE_AR", tool(o, isWindows(o) ? "llvm-lib" : "llvm-ar"), " CACHE FILEPATH \"\""),
+    ...(isWindows(o) ? [] : [set("CMAKE_AR", tool(o, "llvm-ar"), " CACHE FILEPATH \"\"")]), // WinMsvc.cmake sets llvm-lib
     set("CMAKE_RANLIB", tool(o, "llvm-ranlib"), " CACHE FILEPATH \"\""),
     set("CMAKE_STRIP", tool(o, "llvm-strip"), " CACHE FILEPATH \"\""),
     "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)",
@@ -175,7 +175,11 @@ export function buildHostCompilerRt(o: Options, llvmBuildDir: string, install: s
     COMPILER_RT_BUILD_GWP_ASAN: "OFF",
     COMPILER_RT_BUILD_CTX_PROFILE: "OFF",
     COMPILER_RT_INSTALL_PATH: resourceDir,
-    ...(isWindows(o) ? { CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded" } : {}),
+    // One target, stated (as LLVM's runtimes build configures it): compiler-rt then skips its
+    // multi-arch probing, whose GCC-style -march= test flags clang-cl does not take for assembly.
+    ...(isWindows(o)
+      ? { CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded", COMPILER_RT_DEFAULT_TARGET_ONLY: "ON", CMAKE_C_COMPILER_TARGET: clangTarget(o), CMAKE_CXX_COMPILER_TARGET: clangTarget(o), CMAKE_ASM_COMPILER_TARGET: clangTarget(o) }
+      : {}),
   };
   if (isDarwin(o)) {
     // compiler-rt's Darwin CMake asks xcrun/xcodebuild for SDKs and their versions; answer for it.
