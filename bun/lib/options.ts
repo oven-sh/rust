@@ -12,10 +12,12 @@ export const RECIPE_VERSION = 1;
  * The oven-sh/bun commit the PGO profiles are trained on (and whose SDK pins the cross builds
  * use). The only way to change it is this line: a toolchain release is reproducible from the
  * commit it was built from. Training needs a Bun tree that understands BUN_TOOLCHAIN_LLVM /
- * BUN_TOOLCHAIN_RUST (scripts/build/tools.ts); a stale ref only makes the profile slightly less
- * representative.
+ * BUN_TOOLCHAIN_RUST (scripts/build/tools.ts) and that builds cleanly with this toolchain, its
+ * post-link checks included — until oven-sh/bun's main builds with it, that is the head of the
+ * branch that moves it there (main plus what the newer clang/lld need); a stale ref only makes
+ * the profile slightly less representative.
  */
-export const BUN_REF = "ae7b8f4abb3ed1da023d61c9a33a54364efd5e27";
+export const BUN_REF = "da27d59573c20e49ba637ff3543b779cfa2d8edf";
 
 export type { Builder, Host } from "./variants.ts";
 
