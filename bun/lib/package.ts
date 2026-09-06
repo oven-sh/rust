@@ -10,12 +10,13 @@
 // BUN_TOOLCHAIN_RUST at it (or keeps them apart). No smoke build here: the BOLT training pass
 // that produced each half already built the variant's Bun with the finished compilers.
 
-import { cpSync, readdirSync, statSync } from "node:fs";
+import { cpSync, linkSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { exists, mkdir, read, remove, write } from "./fs.ts";
 import { llvmProvenance } from "./llvm.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
-import { configureArgs, SHIPPED_COMPONENTS } from "./rust.ts";
+import { configureArgs, PLAIN_COMPONENTS, plainConfigureArgs, SHIPPED_COMPONENTS } from "./rust.ts";
 import { run } from "./run.ts";
 
 export type Half = "llvm" | "rust";
@@ -59,8 +60,8 @@ function packageHalf(o: Options, half: Half): string {
     release: o.release === undefined ? null : `r${o.release}`,
     recipe: RECIPE_VERSION,
     host: o.host,
-    variant: { name: o.variant.name, target: o.variant.target, args: o.variant.args },
-    trainedOn: { bun: o.bunDir === undefined ? o.bunRef : rev(p.bun) },
+    variant: { name: o.variant.name, train: o.variant.train ?? null },
+    trainedOn: o.plain ? null : { bun: o.bunDir === undefined ? o.bunRef : rev(p.bun) },
   };
   if (half === "llvm") {
     write(join(root, "toolchain-llvm.json"), json({
@@ -68,7 +69,7 @@ function packageHalf(o: Options, half: Half): string {
       llvm: { commit: read(join(install, "llvm-project.rev")).trim(), cmake: llvmProvenance(o) },
       bolt: o.llvmBolt,
       mimalloc: o.mimalloc !== undefined,
-      clang: firstLine(run([join(root, "bin", "clang"), "--version"], { capture: true })),
+      clang: o.cross ? null : firstLine(run([join(root, "bin", "clang"), "--version"], { capture: true })),
     }));
   } else {
     for (const [file, src] of Object.entries(RUST_LICENSES)) cpSync(join(o.checkout, src), join(root, "licenses", file));
@@ -77,12 +78,16 @@ function packageHalf(o: Options, half: Half): string {
     }
     write(join(root, "toolchain-rust.json"), json({
       ...common,
-      rust: { commit: rev(o.checkout), configure: configureArgs(o), dist: SHIPPED_COMPONENTS },
+      rust: { commit: rev(o.checkout), configure: o.plain ? plainConfigureArgs(o) : configureArgs(o), dist: o.plain ? PLAIN_COMPONENTS : SHIPPED_COMPONENTS },
       bolt: o.rustBolt,
-      rustc: firstLine(run([join(root, "bin", "rustc"), "-vV"], { capture: true })),
+      rustc: o.cross ? null : firstLine(run([join(root, "bin", "rustc"), "-vV"], { capture: true })),
     }));
   }
 
+  // Identical executables (clang-cl.exe = clang.exe, lld-link.exe = lld.exe, … on hosts where
+  // LLVM installs copies instead of symlinks) become hardlinks: tar stores each once, and
+  // extraction recreates them as links or copies, whichever the filesystem supports.
+  hardlinkDuplicates(join(root, "bin"));
   const tarball = join(p.out, `${name}.tar.zst`);
   run(["tar", "-I", `zstd -19 -T${o.jobs}`, "-cf", tarball, "-C", p.out, name]);
   console.log(`${tarball} (${(statSync(tarball).size / 2 ** 20).toFixed(0)} MiB)`);
@@ -92,3 +97,27 @@ function packageHalf(o: Options, half: Half): string {
 const json = (v: unknown) => JSON.stringify(v, null, 2) + "\n";
 const rev = (repo: string) => run(["git", "rev-parse", "HEAD"], { cwd: repo, capture: true, quiet: true }).trim();
 const firstLine = (s: string) => s.split("\n")[0]!.trim();
+
+function hardlinkDuplicates(dir: string): void {
+  if (!exists(dir)) return;
+  const bySize = new Map<number, string[]>();
+  for (const f of readdirSync(dir)) {
+    const st = lstatSync(join(dir, f));
+    if (!st.isFile() || st.size < 1 << 20) continue;
+    bySize.set(st.size, [...(bySize.get(st.size) ?? []), f]);
+  }
+  for (const files of bySize.values()) {
+    if (files.length < 2) continue;
+    const digest = (f: string) => createHash("sha256").update(readFileSync(join(dir, f))).digest("hex");
+    const first = new Map<string, string>();
+    for (const f of files) {
+      const d = digest(f);
+      const orig = first.get(d);
+      if (orig === undefined) first.set(d, f);
+      else {
+        rmSync(join(dir, f));
+        linkSync(join(dir, orig), join(dir, f));
+      }
+    }
+  }
+}

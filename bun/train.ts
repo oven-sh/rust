@@ -30,6 +30,8 @@ import { readTrainingEnv } from "./lib/train-config.ts";
 
 const config = readTrainingEnv();
 const v = config.variant;
+if (v.train === undefined) throw new Error(`variant ${v.name} for ${v.host} is a plain build; there is nothing to train`);
+const t = v.train;
 const b: BunBuild = { bunDir: config.bunDir, outDir: config.trainDir, jobs: config.jobs };
 
 if (config.bunRef !== undefined) checkoutBun(config.bunDir, config.bunRef);
@@ -47,7 +49,7 @@ switch (mode) {
     build("clang-bolt", { llvm: requireArg(3, "LLVM_DIR") }, "default");
     break;
   case "preflight":
-    remove(bunBuild(b, `preflight-${v.name}`, v.target, v.args, { llvm: config.hostLlvm, rust: process.argv[3] }, null));
+    remove(bunBuild(b, `preflight-${v.name}`, t.target, t.args, { llvm: config.hostLlvm, rust: process.argv[3] }, null));
     break;
   default:
     throw new Error(`usage: train.ts rust|clang|clang-bolt LLVM_DIR|preflight [RUST_DIR] (got ${mode})`);
@@ -71,7 +73,7 @@ function trainRust(): void {
 }
 
 function build(name: string, toolchain: Toolchain, ninjaTarget: string): void {
-  remove(bunBuild(b, `${name}-${v.name}`, v.target, v.args, toolchain, ninjaTarget));
+  remove(bunBuild(b, `${name}-${v.name}`, t.target, t.args, toolchain, ninjaTarget));
 }
 
 function requireArg(index: number, name: string): string {

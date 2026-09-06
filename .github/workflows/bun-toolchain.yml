@@ -25,6 +25,9 @@ on:
       variants:
         description: only these variants, comma-separated (default is all of bun/lib/variants.ts)
         required: false
+      hosts:
+        description: "only toolchains for these hosts, comma-separated (linux-x64, linux-aarch64, darwin-aarch64, windows-x64, windows-aarch64); default all"
+        required: false
       halves:
         description: llvm, rust or llvm,rust (default both)
         required: false
@@ -66,7 +69,12 @@ jobs:
     # pairs: the (host, variant) jobs; hosts: the hosts those need; halves: llvm and/or rust.
     outputs:
       pairs: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).pairs) }}
-      hosts: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).hosts) }}
+      trainedPairs: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).trainedPairs) }}
+      plainPairs: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).plainPairs) }}
+      anyTrained: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).trainedPairs.include[0] != null) }}
+      anyPlain: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).plainPairs.include[0] != null) }}
+      builders: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).builders) }}
+      trained: ${{ toJSON(fromJSON(steps.matrix.outputs.matrix).trained) }}
       llvm: ${{ contains(fromJSON(steps.matrix.outputs.matrix).halves, 'llvm') }}
       rust: ${{ contains(fromJSON(steps.matrix.outputs.matrix).halves, 'rust') }}
       release: ${{ steps.release.outputs.number }}
@@ -77,7 +85,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 26 }
       - id: matrix
-        run: echo "matrix=$(node bun/toolchain.ts matrix ${{ inputs.variants && format('--variants={0}', inputs.variants) || '' }} ${{ inputs.halves && format('--halves={0}', inputs.halves) || '' }})" | tee -a "$GITHUB_OUTPUT"
+        run: echo "matrix=$(node bun/toolchain.ts matrix ${{ inputs.variants && format('--variants={0}', inputs.variants) || '' }} ${{ inputs.hosts && format('--hosts={0}', inputs.hosts) || '' }} ${{ inputs.halves && format('--halves={0}', inputs.halves) || '' }})" | tee -a "$GITHUB_OUTPUT"
       # Releases are bun-toolchain-<branch>-<commit>-r<N>: numbered r1, r2, … per branch (a branch
       # is one rustc nightly + its LLVM), in publication order. A run for a commit that already has
       # a release (a rerun, or a dispatch filling in variants) publishes into it under its number.
@@ -103,9 +111,9 @@ jobs:
     needs: plan
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
-    name: image ${{ matrix.host }}
-    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+      matrix: ${{ fromJSON(needs.plan.outputs.builders) }}
+    name: image ${{ matrix.builder }}
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
     permissions: { contents: read, packages: write }
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -115,7 +123,7 @@ jobs:
       - name: Build and push (if missing)
         id: build
         run: |
-          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.builder }}"
           if docker manifest inspect "$tag" >/dev/null 2>&1; then echo "$tag exists"; exit 0; fi
           docker build -t "$tag" bun
           docker push "$tag" && echo "pushed=true" >> "$GITHUB_OUTPUT" || echo "::warning::could not push $tag; later jobs will rebuild the image"
@@ -124,9 +132,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          keep="${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          keep="${{ hashFiles('bun/Dockerfile') }}-${{ matrix.builder }}"
           gh api --paginate "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions" \
-            --jq '.[] | select((.metadata.container.tags | length == 0) or ([.metadata.container.tags[] | endswith("-${{ matrix.host }}")] | any)) | select(.metadata.container.tags | index("'"$keep"'") | not) | .id' |
+            --jq '.[] | select((.metadata.container.tags | length == 0) or ([.metadata.container.tags[] | endswith("-${{ matrix.builder }}")] | any)) | select(.metadata.container.tags | index("'"$keep"'") | not) | .id' |
           while read -r id; do
             echo "deleting package version $id"
             gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/bun-toolchain-env/versions/$id" || true
@@ -134,12 +142,12 @@ jobs:
 
   llvm-instrumented:
     needs: [plan, image]
-    if: needs.plan.outputs.llvm == 'true'
+    if: needs.plan.outputs.llvm == 'true' && needs.plan.outputs.anyTrained == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
-    name: llvm-instrumented ${{ matrix.host }}
-    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+      matrix: ${{ fromJSON(needs.plan.outputs.trained) }}
+    name: llvm-instrumented ${{ matrix.builder }}
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -148,15 +156,15 @@ jobs:
         run: git submodule update --init --depth=1 src/llvm-project
       - name: Container image
         run: |
-          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.builder }}"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
       - name: Stage 1 + instrumented clang/lld
         run: mkdir -p obj/home && GID=$(id -g) && eval "$IN_CONTAINER node bun/toolchain.ts llvm-instrumented $TOOLCHAIN_ARGS"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: llvm-instrumented-${{ matrix.host }}
-          path: obj/bun-toolchain/llvm-instrumented-${{ matrix.host }}.tar.zst
+          name: llvm-instrumented-${{ matrix.builder }}
+          path: obj/bun-toolchain/llvm-instrumented-${{ matrix.builder }}.tar.zst
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -164,11 +172,12 @@ jobs:
 
   llvm:
     needs: [plan, llvm-instrumented]
+    if: needs.plan.outputs.anyTrained == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
-    name: llvm ${{ matrix.variant }} (${{ matrix.host }})
-    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+      matrix: ${{ fromJSON(needs.plan.outputs.trainedPairs) }}
+    name: llvm ${{ matrix.variant }} ${{ matrix.host }}
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -177,16 +186,16 @@ jobs:
         run: git submodule update --init --depth=1 src/llvm-project
       - name: Container image
         run: |
-          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.builder }}"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with: { name: "llvm-instrumented-${{ matrix.host }}", path: obj/bun-toolchain }
+        with: { name: "llvm-instrumented-${{ matrix.builder }}", path: obj/bun-toolchain }
       - name: Train on ${{ matrix.variant }}, final clang/lld, BOLT, package
         run: |
           mkdir -p obj/home && GID=$(id -g)
-          eval "$IN_CONTAINER node bun/toolchain.ts llvm --variant=${{ matrix.variant }} $TOOLCHAIN_ARGS"
-          eval "$IN_CONTAINER node bun/toolchain.ts package --variant=${{ matrix.variant }} --release=${{ needs.plan.outputs.release }} $TOOLCHAIN_ARGS"
+          eval "$IN_CONTAINER node bun/toolchain.ts llvm --host=${{ matrix.host }} --variant=${{ matrix.variant }} $TOOLCHAIN_ARGS"
+          eval "$IN_CONTAINER node bun/toolchain.ts package --host=${{ matrix.host }} --variant=${{ matrix.variant }} --release=${{ needs.plan.outputs.release }} $TOOLCHAIN_ARGS"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bun-toolchain-${{ matrix.host }}-${{ matrix.variant }}-llvm
@@ -206,14 +215,48 @@ jobs:
           retention-days: 14
           overwrite: true
 
+  llvm-plain:
+    needs: [plan, image]
+    if: needs.plan.outputs.llvm == 'true' && needs.plan.outputs.anyPlain == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.plainPairs) }}
+    name: llvm ${{ matrix.variant }} ${{ matrix.host }} (plain, on ${{ matrix.builder }})
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { submodules: false, fetch-depth: 1 }
+      - name: Fetch src/llvm-project
+        run: git submodule update --init --depth=1 src/llvm-project
+      - name: Container image
+        run: |
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.builder }}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
+      - name: Cross-compile clang/lld for ${{ matrix.host }}, package
+        run: |
+          mkdir -p obj/home && GID=$(id -g)
+          eval "$IN_CONTAINER node bun/toolchain.ts llvm --host=${{ matrix.host }} --variant=${{ matrix.variant }} $TOOLCHAIN_ARGS"
+          eval "$IN_CONTAINER node bun/toolchain.ts package --host=${{ matrix.host }} --variant=${{ matrix.variant }} --release=${{ needs.plan.outputs.release }} $TOOLCHAIN_ARGS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bun-toolchain-${{ matrix.host }}-${{ matrix.variant }}-llvm
+          path: |
+            obj/bun-toolchain/out/*-llvm.tar.zst
+            obj/bun-toolchain/out/*-llvm/toolchain-llvm.json
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
   rust:
     needs: [plan, image]
     if: needs.plan.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
-    name: rust ${{ matrix.variant }} (${{ matrix.host }})
-    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    name: rust ${{ matrix.variant }} ${{ matrix.host }}${{ matrix.plain && format(' (plain, on {0})', matrix.builder) || '' }}
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
     # A healthy job is under 2h30 (x86_64 with BOLT ~1h30, aarch64 ~1h25, +~40 min with BOLT); past
     # that it is stuck, and timing out (unlike cancelling) still runs the artifact uploads below.
     timeout-minutes: 170
@@ -224,14 +267,14 @@ jobs:
         run: git submodule update --init --depth=1 src/llvm-project
       - name: Container image
         run: |
-          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.host }}"
+          tag="$IMAGE:${{ hashFiles('bun/Dockerfile') }}-${{ matrix.builder }}"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$tag" && docker tag "$tag" bun-toolchain-env || docker build -t bun-toolchain-env bun
-      - name: rust-lang dist pipeline trained on ${{ matrix.variant }}, package
+      - name: ${{ matrix.plain && 'Cross-compile rustc/cargo' || format('rust-lang dist pipeline trained on {0}', matrix.variant) }}, package
         run: |
           mkdir -p obj/home && GID=$(id -g)
-          eval "$IN_CONTAINER node bun/toolchain.ts rust --variant=${{ matrix.variant }} $TOOLCHAIN_ARGS"
-          eval "$IN_CONTAINER node bun/toolchain.ts package --variant=${{ matrix.variant }} --release=${{ needs.plan.outputs.release }} $TOOLCHAIN_ARGS"
+          eval "$IN_CONTAINER node bun/toolchain.ts rust --host=${{ matrix.host }} --variant=${{ matrix.variant }} $TOOLCHAIN_ARGS"
+          eval "$IN_CONTAINER node bun/toolchain.ts package --host=${{ matrix.host }} --variant=${{ matrix.variant }} --release=${{ needs.plan.outputs.release }} $TOOLCHAIN_ARGS"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bun-toolchain-${{ matrix.host }}-${{ matrix.variant }}-rust
@@ -256,10 +299,10 @@ jobs:
           overwrite: true
 
   release:
-    needs: [plan, llvm, rust]
+    needs: [plan, llvm, llvm-plain, rust]
     # A half that plan left out is "skipped", which would otherwise skip this too; and at least one
     # half must have actually run.
-    if: ${{ !cancelled() && !failure() && (needs.llvm.result == 'success' || needs.rust.result == 'success') }}
+    if: ${{ !cancelled() && !failure() && (needs.llvm.result == 'success' || needs.llvm-plain.result == 'success' || needs.rust.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

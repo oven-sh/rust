@@ -14,6 +14,8 @@ import { chmodSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
 import { NO_JUMP_TABLES } from "./llvm.ts";
+import { isDarwin, MACOS_DEPLOYMENT_TARGET, wrappers } from "./cross.ts";
+import { macosSdk } from "./sdks.ts";
 import { type Options, paths, RECIPE_VERSION } from "./options.ts";
 import { run } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
@@ -199,6 +201,79 @@ export function buildRust(o: Options): void {
   markDone(p.rustInstall, key);
 }
 
+/**
+ * `configure` arguments of a plain (untrained) toolchain cross-compiled for a host this machine
+ * cannot run: upstream's dist configuration for that host as far as it applies off-host — same
+ * channel, LTO for rustc, rust-lld, vendored native deps — with the compiler built here (build =
+ * this machine) for --host/--target = the toolchain's host, C/C++ parts compiled and linked by
+ * lib/cross.ts's wrappers (clang --target=<host> + the platform SDK + lld). No PGO (the
+ * instrumented compiler could not run here), no BOLT (ELF only), LLVM linked statically.
+ * Components: what a developer machine building Bun needs.
+ */
+export const PLAIN_COMPONENTS = ["rustc", "rust-std", "cargo", "rust-src", "rustfmt", "clippy"];
+export function plainConfigureArgs(o: Options): string[] {
+  const w = wrappers(o);
+  const b = o.builderTriple;
+  const t = o.triple;
+  return [
+    `--build=${b}`,
+    `--host=${t}`,
+    `--target=${t}`,
+    `--set target.${b}.cc=${o.hostLlvm}/bin/clang`,
+    `--set target.${b}.cxx=${o.hostLlvm}/bin/clang++`,
+    `--set target.${b}.linker=${o.hostLlvm}/bin/clang`,
+    `--set target.${b}.ar=${o.hostLlvm}/bin/llvm-ar`,
+    `--set target.${b}.ranlib=${o.hostLlvm}/bin/llvm-ranlib`,
+    `--set target.${t}.cc=${w.cc}`,
+    `--set target.${t}.cxx=${w.cxx}`,
+    `--set target.${t}.linker=${w.linker}`,
+    `--set target.${t}.ar=${w.ar}`,
+    `--set target.${t}.ranlib=${w.ranlib}`,
+    "--release-channel=nightly",
+    "--set llvm.download-ci-llvm=false",
+    "--set llvm.targets=AArch64;X86",
+    "--set llvm.experimental-targets=",
+    "--set llvm.link-shared=false",
+    "--set llvm.static-libstdcpp=false",
+    "--set rust.lld=true",
+    // rustc itself shells out to rust-objcopy from its sysroot (stripping, on Apple targets), so
+    // the LLVM tools have to be staged even though the llvm-tools component is not shipped.
+    "--set rust.llvm-tools=true",
+    "--set rust.lto=thin",
+    "--set rust.codegen-units=1",
+    "--set rust.codegen-backends=llvm",
+    "--set build.extended=true",
+    "--set build.docs=false",
+    "--set build.optimized-compiler-builtins",
+    "--enable-cargo-native-static",
+    "--enable-locked-deps",
+    "--disable-manage-submodules",
+    "--set build.print-step-timings",
+    "--dist-compression-formats=xz",
+  ].flatMap(a => (a.startsWith("--set ") ? ["--set", a.slice("--set ".length)] : [a]));
+}
+
+/** rustc + cargo for a host this machine cannot run (lib/variants.ts plain variants): a plain cross dist. */
+export function buildRustPlain(o: Options): void {
+  const p = paths(o);
+  const key = `rust-plain-${RECIPE_VERSION}-${run(["git", "rev-parse", "HEAD"], { cwd: o.checkout, capture: true }).trim()}-${o.host}`;
+  if (isDone(p.rustInstall, key)) {
+    console.log(`rust: up to date (${key})`);
+    return;
+  }
+  mkdir(p.rustBuild);
+  const env: Record<string, string> = {
+    RUST_BOOTSTRAP_CONFIG: join(p.rustBuild, "bootstrap.toml"),
+    // cc-rs, for the C parts of std/cargo's native deps: where the SDK is (it would ask xcrun).
+    ...(isDarwin(o) ? { SDKROOT: macosSdk(o), MACOSX_DEPLOYMENT_TARGET: MACOS_DEPLOYMENT_TARGET } : {}),
+  };
+  remove(env.RUST_BOOTSTRAP_CONFIG!);
+  run([join(o.checkout, "configure"), ...plainConfigureArgs(o)], { cwd: p.rustBuild, env });
+  run(["python3", join(o.checkout, "x.py"), "dist", "--host", o.triple, "--target", o.triple, ...PLAIN_COMPONENTS], { cwd: p.rustBuild, env });
+  installDist(o, PLAIN_COMPONENTS);
+  markDone(p.rustInstall, key);
+}
+
 /** Compile and run a small program, and build a small cargo project, with the installed toolchain. */
 export function smokeTest(o: Options): void {
   const p = paths(o);
@@ -233,13 +308,13 @@ fn main() {
   console.log("smoke test: installed rustc and cargo work");
 }
 
-export function installDist(o: Options): void {
+export function installDist(o: Options, which: string[] = components): void {
   const p = paths(o);
   const dist = p.rustDist;
   remove(p.rustInstall);
   mkdir(p.rustInstall);
   const tarballs = readdirSync(dist).filter(f => f.endsWith(".tar.xz"));
-  for (const component of components) {
+  for (const component of which) {
     // rust-src-nightly.tar.xz; everything else is <component>-nightly-<triple>.tar.xz
     const tarball = tarballs.find(f => f === `${component}-nightly${component === "rust-src" ? "" : `-${o.triple}`}.tar.xz`);
     if (tarball === undefined) throw new Error(`x.py dist did not produce a ${component} tarball in ${dist}`);
@@ -252,7 +327,7 @@ export function installDist(o: Options): void {
     run([join(unpack, dir!, "install.sh"), `--prefix=${p.rustInstall}`, "--disable-ldconfig"], { capture: true });
     remove(unpack);
   }
-  if (!exists(join(p.rustInstall, "bin", "rustc"))) throw new Error("installing the rust dist tarballs produced no bin/rustc");
+  if (!exists(join(p.rustInstall, "bin", "rustc")) && !exists(join(p.rustInstall, "bin", "rustc.exe"))) throw new Error("installing the rust dist tarballs produced no bin/rustc");
   // rust-installer's bookkeeping (install.log, manifests, uninstall.sh); not part of the toolchain
   for (const f of readdirSync(join(p.rustInstall, "lib", "rustlib"))) {
     if (!statSync(join(p.rustInstall, "lib", "rustlib", f)).isDirectory()) remove(join(p.rustInstall, "lib", "rustlib", f));

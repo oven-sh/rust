@@ -23,6 +23,7 @@
 import { chmodSync, copyFileSync, cpSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { exists, isDone, markDone, mkdir, remove, write } from "./fs.ts";
+import { buildHostCompilerRt, cmakeToolchainFile, isWindows, wrappers } from "./cross.ts";
 import { type Options, paths, RECIPE_VERSION, type Host } from "./options.ts";
 import { run, runConcurrently } from "./run.ts";
 import { trainingEnv } from "./train-config.ts";
@@ -41,7 +42,7 @@ export const DISTRIBUTION_COMPONENTS = [
   "llvm-objcopy", "llvm-strip", "llvm-install-name-tool", "llvm-bitcode-strip",
   "llvm-objdump", "llvm-otool", "llvm-readobj", "llvm-readelf", "llvm-dwarfdump", "llvm-cxxfilt",
   "llvm-symbolizer", "llvm-addr2line", "llvm-lipo", "llvm-libtool-darwin", "dsymutil",
-  "llvm-rc", "llvm-windres", "llvm-mt",
+  "llvm-rc", "llvm-windres", "llvm-mt", "llvm-ml", "llvm-cvtres",
   "llvm-profdata", "llvm-cov", "llvm-config",
 ];
 
@@ -207,7 +208,7 @@ function prefixed(prefix: string, cache: Record<string, string>): Record<string,
 function finalStageCache(o: Options): Record<string, string> {
   const p = paths(o);
   const l = layout(o);
-  const crossLinux = o.variant.target.os === "linux" && `linux-${o.variant.target.arch}` !== o.host;
+  const crossLinux = o.variant.train?.target.os === "linux" && `linux-${o.variant.train.target.arch}` !== o.host;
   // Release.cmake l.181-191: RELEASE_LINKER_FLAGS on Linux (what BOLT needs from the link).
   const releaseLinkerFlags = "-Wl,--emit-relocs,-znow";
   const cache: Record<string, string> = {
@@ -353,9 +354,72 @@ export async function buildFinal(o: Options): Promise<void> {
   markDone(p.llvmInstall, key);
 }
 
-/** What toolchain.json records for the LLVM half: both configures. */
+/**
+ * -D settings of a plain (untrained, cross-compiled) clang + lld for a host this machine cannot
+ * run: upstream's release configuration in one stage — the final stage's settings minus PGO
+ * (no profile), BOLT (ELF only, and nothing here can execute the result), mimalloc and the static
+ * libstdc++/libxml2/zstd choices that are about Linux hosts. Compiled by the builder's own LLVM
+ * through lib/cross.ts's toolchain file.
+ */
+function plainCache(o: Options): Record<string, string> {
+  const p = paths(o);
+  return {
+    CMAKE_TOOLCHAIN_FILE: cmakeToolchainFile(o),
+    CMAKE_BUILD_TYPE: "Release",
+    LLVM_ENABLE_PROJECTS: "clang;lld",
+    LLVM_TARGETS_TO_BUILD: "X86;AArch64",
+    LLVM_ENABLE_LTO: "Thin",
+    // llvm-tblgen, clang-tblgen, … that must run during the build: the builder's, same commit.
+    LLVM_NATIVE_TOOL_DIR: join(o.hostLlvm, "bin"),
+    LLVM_HOST_TRIPLE: o.triple,
+    LLVM_DEFAULT_TARGET_TRIPLE: o.triple,
+    // zlib and libxml2 (llvm-mt, lld-link's manifest merging) are system libraries on macOS, in
+    // the SDK; a Windows host has neither, so no llvm-mt there.
+    LLVM_ENABLE_ZLIB: isWindows(o) ? "OFF" : "FORCE_ON",
+    LLVM_ENABLE_ZSTD: "OFF",
+    LLVM_ENABLE_LIBXML2: isWindows(o) ? "OFF" : "FORCE_ON",
+    LLVM_ENABLE_LIBEDIT: "OFF",
+    LLVM_INCLUDE_TESTS: "OFF",
+    LLVM_INCLUDE_BENCHMARKS: "OFF",
+    LLVM_INCLUDE_EXAMPLES: "OFF",
+    CLANG_PLUGIN_SUPPORT: "OFF",
+    LLVM_ENABLE_PLUGINS: "OFF",
+    LLVM_ENABLE_UNWIND_TABLES: "OFF",
+    LLVM_PARALLEL_LINK_JOBS: String(Math.max(1, Math.floor(o.jobs / 8))),
+    // A Windows host gets what LLVM's own Windows release does: real copies rather than symlinks
+    // for clang++/clang-cl/lld-link/… (package() hardlinks the identical files so the tarball
+    // stays small), and the static MSVC runtime so nothing depends on the VC++ redistributable.
+    ...(isWindows(o) ? { LLVM_USE_SYMLINKS: "OFF", CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded" } : {}),
+    // compiler-rt is a separate configure (lib/cross.ts buildHostCompilerRt): the runtimes
+    // build would try to run the just-built clang, which cannot execute here.
+    LLVM_DISTRIBUTION_COMPONENTS: DISTRIBUTION_COMPONENTS.filter(c => c !== "builtins" && c !== "runtimes" && !(isWindows(o) && c === "llvm-mt")).join(";"),
+    CMAKE_INSTALL_PREFIX: p.llvmInstall,
+  };
+}
+
+/** clang + lld for a host this machine cannot run (lib/variants.ts plain variants): one release build, no PGO/BOLT. */
+export function buildPlain(o: Options): void {
+  const p = paths(o);
+  const l = layout(o);
+  const key = `llvm-plain-${RECIPE_VERSION}-${llvmRev(o)}-${o.host}`;
+  if (isDone(p.llvmInstall, key)) {
+    console.log(`llvm: up to date (${key})`);
+    return;
+  }
+  remove(p.llvmFinal);
+  remove(p.llvmInstall);
+  const env = { PATH: `${wrappers(o).dir}:${process.env.PATH}`, NINJA_STATUS: "[%f/%t %es] " };
+  cmakeConfigure(join(o.llvmProject, "llvm"), l.finalBuild, plainCache(o));
+  run(["ninja", "-C", l.finalBuild, `-j${o.jobs}`, "install-distribution"], { env });
+  buildHostCompilerRt(o, l.finalBuild, p.llvmInstall);
+  for (const [name, src] of Object.entries(LLVM_LICENSES)) cpSync(join(o.llvmProject, src), join(p.llvmInstall, "licenses", name));
+  write(join(p.llvmInstall, "llvm-project.rev"), llvmRev(o) + "\n");
+  markDone(p.llvmInstall, key);
+}
+
+/** What toolchain.json records for the LLVM half: the configures. */
 export function llvmProvenance(o: Options): Record<string, unknown> {
-  return { instrumented: instrumentedCache(o), final: finalStageCache(o) };
+  return o.plain ? { plain: plainCache(o) } : { instrumented: instrumentedCache(o), final: finalStageCache(o) };
 }
 
 /** Binaries in the install's bin/ that get BOLTed: the clang driver binary and lld. */
