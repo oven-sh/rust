@@ -95,6 +95,12 @@ enum EnvironmentCmd {
         #[arg(long)]
         benchmark_cargo_config: Vec<String>,
 
+        /// Gather PGO/BOLT profiles by running this program instead of the rustc-perf
+        /// benchmark set. It is invoked once per gathering phase with the compiler to
+        /// exercise in its environment (see `training::custom_training_command`).
+        #[arg(long)]
+        training_command: Option<Utf8PathBuf>,
+
         /// Perform tests after final build if it's not a fast try build
         #[arg(long)]
         run_tests: bool,
@@ -144,6 +150,7 @@ fn create_environment(args: Args) -> anyhow::Result<(Environment, Vec<String>)> 
             use_bolt,
             skipped_tests,
             benchmark_cargo_config,
+            training_command,
             shared,
             run_tests,
             build_llvm,
@@ -162,6 +169,7 @@ fn create_environment(args: Args) -> anyhow::Result<(Environment, Vec<String>)> 
                 .use_bolt(use_bolt)
                 .skipped_tests(skipped_tests)
                 .benchmark_cargo_config(benchmark_cargo_config)
+                .training_command(training_command)
                 .run_tests(run_tests)
                 .fast_try_build(is_fast_try_build)
                 .build_llvm(build_llvm)
@@ -228,13 +236,15 @@ fn execute_pipeline(
 ) -> anyhow::Result<()> {
     reset_directory(&env.artifact_dir())?;
 
-    with_log_group("Building rustc-perf", || {
-        let rustc_perf_checkout_dir = match env.prebuilt_rustc_perf() {
-            Some(dir) => dir,
-            None => env.checkout_path().join("src").join("tools").join("rustc-perf"),
-        };
-        copy_rustc_perf(env, &rustc_perf_checkout_dir)
-    })?;
+    if env.training_command().is_none() {
+        with_log_group("Building rustc-perf", || {
+            let rustc_perf_checkout_dir = match env.prebuilt_rustc_perf() {
+                Some(dir) => dir,
+                None => env.checkout_path().join("src").join("tools").join("rustc-perf"),
+            };
+            copy_rustc_perf(env, &rustc_perf_checkout_dir)
+        })?;
+    }
 
     // Stage 1: Build PGO instrumented rustc
     // We use a normal build of LLVM, because gathering PGO profiles for LLVM and `rustc` at the
