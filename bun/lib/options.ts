@@ -9,12 +9,13 @@ import { join, resolve } from "node:path";
 export const RECIPE_VERSION = 1;
 
 /**
- * The oven-sh/bun commit the PGO profiles are trained on. Training needs a Bun
- * tree that understands BUN_TOOLCHAIN_LLVM / BUN_TOOLCHAIN_RUST
- * (scripts/build/tools.ts). Bumped deliberately; a stale ref only makes the
- * profile slightly less representative.
+ * The oven-sh/bun commit the PGO profiles are trained on (and whose SDK pins the cross builds
+ * use). The only way to change it is this line: a toolchain release is reproducible from the
+ * commit it was built from. Training needs a Bun tree that understands BUN_TOOLCHAIN_LLVM /
+ * BUN_TOOLCHAIN_RUST (scripts/build/tools.ts); a stale ref only makes the profile slightly less
+ * representative.
  */
-export const DEFAULT_BUN_REF = "ae7b8f4abb3ed1da023d61c9a33a54364efd5e27";
+export const BUN_REF = "ae7b8f4abb3ed1da023d61c9a33a54364efd5e27";
 
 export type { Builder, Host } from "./variants.ts";
 
@@ -130,7 +131,7 @@ export function parseOptions(argv: string[]): Options {
     hostLlvm: resolve(take("host-llvm") ?? "/opt/llvm"),
     mimalloc: (v => (v === "none" ? undefined : resolve(v)))(take("mimalloc") ?? "/opt/mimalloc/mimalloc.o"),
     libxml2: resolve(take("libxml2") ?? "/opt/libxml2"),
-    bunRef: take("bun-ref") ?? DEFAULT_BUN_REF,
+    bunRef: BUN_REF,
     release: ((v) => (v === undefined ? undefined : Number(v)))(take("release")),
     bunDir: take("bun-dir"),
     variantFilter: take("variants")?.split(","),
@@ -154,9 +155,6 @@ export function parseOptions(argv: string[]): Options {
     console.error(`unknown option(s): ${[...args.keys()].map(k => `--${k}`).join(", ")}`);
     usage();
   }
-  if (options.bunDir === undefined && !/^[0-9a-f]{40}$/.test(options.bunRef)) {
-    throw new Error(`--bun-ref must be a full 40-character commit sha (it is fetched shallowly by sha), got ${options.bunRef}`);
-  }
   return options;
 }
 
@@ -172,9 +170,8 @@ options:
   --mimalloc=FILE|none mimalloc.o to link into clang/lld (default: /opt/mimalloc/mimalloc.o)
   --libxml2=DIR        static libxml2 prefix for lld/llvm-mt (default: /opt/libxml2)
   --llvm-project=DIR   llvm sources (default: src/llvm-project)
-  --bun-ref=SHA        oven-sh/bun commit to train on (default: pinned)
   --release=N          release number this build is published as (recorded in toolchain-*.json)
-  --bun-dir=DIR        use this Bun checkout instead of cloning --bun-ref
+  --bun-dir=DIR        use this Bun checkout instead of cloning BUN_REF (local experiments)
   --jobs=N             parallelism (default: all cores)
   --host=HOST          machine the toolchain runs on (default: this one): linux-x64|linux-aarch64|darwin-aarch64|windows-x64|windows-aarch64
   --variant=NAME       ci-<os>-<arch>[-<abi>|-asan] or dev (lib/variants.ts); a variant with no training workload is a plain build

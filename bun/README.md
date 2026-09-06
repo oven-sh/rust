@@ -46,7 +46,7 @@ Per host and variant, two tarballs attached to a GitHub release named
 `bun-toolchain-<branch>-<commit>-r<N>` by [the workflow](../.github/workflows/bun-toolchain.yml). Releases
 are numbered r1, r2, … per branch (a branch is one rustc nightly and its LLVM; a new branch starts
 at r1 again), in publication order: every push to a `nightly-*-bun` branch is a release — retraining
-on a newer Bun is a commit that bumps `DEFAULT_BUN_REF` — and a rerun or a manual dispatch for an
+on a newer Bun is a commit that bumps `BUN_REF` — and a rerun or a manual dispatch for an
 already-released commit publishes into that commit's release. The release is created at the commit
 it was built from; each tarball's `toolchain-{llvm,rust}.json` records the release number, the
 commits it was built from and the Bun commit it was trained on.

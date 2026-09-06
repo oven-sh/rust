@@ -19,9 +19,6 @@ name: bun-toolchain
 on:
   workflow_dispatch:
     inputs:
-      bun-ref:
-        description: oven-sh/bun commit to train on (default is pinned in bun/lib/options.ts)
-        required: false
       variants:
         description: only these variants, comma-separated (default is all of bun/lib/variants.ts)
         required: false
@@ -54,7 +51,7 @@ permissions:
   packages: read
 
 env:
-  TOOLCHAIN_ARGS: ${{ inputs.bun-ref && format('--bun-ref={0}', inputs.bun-ref) || '' }} ${{ inputs.skip-bolt && '--skip-bolt' || '' }} ${{ inputs.extra-args }}
+  TOOLCHAIN_ARGS: ${{ inputs.skip-bolt && '--skip-bolt' || '' }} ${{ inputs.extra-args }}
   # bun/Dockerfile, built once per Dockerfile change and kept in GHCR; jobs append :<dockerfile hash>-<host>.
   IMAGE: ghcr.io/${{ github.repository_owner }}/bun-toolchain-env
   # As the runner's user, so the checkout is trusted by git and outputs are owned by the steps
