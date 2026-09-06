@@ -1,0 +1,242 @@
+[
+  {
+    "run": 1,
+    "arm": "ours",
+    "sha": "2d8661908d9886318f8af3c279115de53ec7ad40",
+    "build": 109200
+  },
+  {
+    "run": 2,
+    "arm": "stock",
+    "sha": "0ac3dad974854ab0ee6ed82eeb900cdaa34510f1",
+    "build": 109208
+  },
+  {
+    "run": 3,
+    "arm": "ours",
+    "sha": "fe86ea31ed95220992ac4084ceb524afd33b2139",
+    "build": 109211
+  },
+  {
+    "run": 4,
+    "arm": "stock",
+    "sha": "3e623c0986618e37f98a2751a32b212fd9861fcc",
+    "build": 109212
+  },
+  {
+    "run": 5,
+    "arm": "ours",
+    "sha": "c9d5a7833690cc17cb2fb6f256a2e89579967499",
+    "build": 109214
+  },
+  {
+    "run": 6,
+    "arm": "stock",
+    "sha": "ccaa55d3ee7e2daacc5ed61ea3355b3c09df29d9",
+    "build": 109220
+  },
+  {
+    "run": 7,
+    "arm": "ours",
+    "sha": "550e32d468542dd7a45e008b32cedec04606ffc0",
+    "build": 109223
+  },
+  {
+    "run": 8,
+    "arm": "stock",
+    "sha": "2e9d1b8aba49a51398753494330dc21fdb76eb81",
+    "build": 109225
+  },
+  {
+    "run": 9,
+    "arm": "ours",
+    "sha": "3fe7374a2f049bf3a0e4be27128f1b4a3516f20a",
+    "build": 109227
+  },
+  {
+    "run": 10,
+    "arm": "stock",
+    "sha": "612b10fb425b732e5fcaf3319719c38a7333550b",
+    "build": 109232
+  },
+  {
+    "run": 11,
+    "arm": "ours",
+    "sha": "99268da5635418bebbf02ef6215bd98d853863ff",
+    "build": 109233
+  },
+  {
+    "run": 12,
+    "arm": "stock",
+    "sha": "066461da886a773972107464395238e8a142a77b",
+    "build": 109235
+  },
+  {
+    "run": 13,
+    "arm": "ours",
+    "sha": "ce8c4fb6cc6957b0599715c6577ccca43762f1cf",
+    "build": 109239
+  },
+  {
+    "run": 14,
+    "arm": "stock",
+    "sha": "5bcf72c535039988d359c37ebce8111fd80e125e",
+    "build": 109243
+  },
+  {
+    "run": 15,
+    "arm": "ours",
+    "sha": "0833a5cdabd3b8e71284395b1a34c829070ec72b",
+    "build": 109245
+  },
+  {
+    "run": 16,
+    "arm": "stock",
+    "sha": "eee539aaa1a45c5f42bebfdab78f6e0b492c4c42",
+    "build": 109248
+  },
+  {
+    "run": 17,
+    "arm": "ours",
+    "sha": "f936aefdf393b496dea9ba0491807e1f209c8565",
+    "build": 109252
+  },
+  {
+    "run": 18,
+    "arm": "stock",
+    "sha": "4ef3ea2e24f5da3189e08914e7e10d2a5663e971",
+    "build": 109254
+  },
+  {
+    "run": 19,
+    "arm": "ours",
+    "sha": "0b112b7b6d321f7b65474bfa3c0b5e51e652b620",
+    "build": 109260
+  },
+  {
+    "run": 20,
+    "arm": "stock",
+    "sha": "8aa88f844ea032526a793a9431a4835567a8ea2a",
+    "build": 109268
+  },
+  {
+    "run": 21,
+    "arm": "ours",
+    "sha": "1bad421dbb987c3952ddf1ec3c317afce3a33451",
+    "build": 109270
+  },
+  {
+    "run": 22,
+    "arm": "stock",
+    "sha": "2ebc8890c27208d4a9ddcd1f2339ef82b60715b4",
+    "build": 109272
+  },
+  {
+    "run": 23,
+    "arm": "ours",
+    "sha": "c313cd67af092042aef2a28a276f39015a7f9dbd",
+    "build": 109277
+  },
+  {
+    "run": 24,
+    "arm": "stock",
+    "sha": "d83c4b6cbfdece29777d2578e600d81bb0ce0eb3",
+    "build": 109282
+  },
+  {
+    "run": 25,
+    "arm": "ours",
+    "sha": "201d1fa0281a6f2b2c5c5fa36923a740d37c3268",
+    "build": 109283
+  },
+  {
+    "run": 26,
+    "arm": "stock",
+    "sha": "e60026970132d5037bc961e551ff051548567454",
+    "build": 109286
+  },
+  {
+    "run": 27,
+    "arm": "ours",
+    "sha": "a3131026f99ae9d89f72e62da7c4725e6debd48d",
+    "build": 109287
+  },
+  {
+    "run": 28,
+    "arm": "stock",
+    "sha": "07aee069c01073497b369d0024f222df4fa0f907",
+    "build": 109288
+  },
+  {
+    "run": 29,
+    "arm": "ours",
+    "sha": "fcb46f9b1ec04323b6da6d808b8a4e8e319c7a3c",
+    "build": 109289
+  },
+  {
+    "run": 30,
+    "arm": "stock",
+    "sha": "2b14811b69e69905872e2b7a011f45d45eaf402e",
+    "build": 109290
+  },
+  {
+    "run": 31,
+    "arm": "ours",
+    "sha": "ecd24d75df3331501417d3c439830464abe78337",
+    "build": 109291
+  },
+  {
+    "run": 32,
+    "arm": "stock",
+    "sha": "ff871f2aed885a80f9d4c98b9cc197dc0ce55444",
+    "build": 109293
+  },
+  {
+    "run": 33,
+    "arm": "ours",
+    "sha": "f3df1b90b4390cf1256aae0c9f9273ff2b8a8dd4",
+    "build": 109296
+  },
+  {
+    "run": 34,
+    "arm": "stock",
+    "sha": "a6cceaa87da5c5a4f9e2961796e3f8e9dd2793a5",
+    "build": 109298
+  },
+  {
+    "run": 35,
+    "arm": "ours",
+    "sha": "94116a55d27ffc614f7f81a9963826cbe4bc6078",
+    "build": 109301
+  },
+  {
+    "run": 36,
+    "arm": "stock",
+    "sha": "476db951fcbd3b1ee8ba61081b1b9b7cf591cecd",
+    "build": 109303
+  },
+  {
+    "run": 37,
+    "arm": "ours",
+    "sha": "098b94ae675158533e225d5de8553f8fb0d72187",
+    "build": 109306
+  },
+  {
+    "run": 38,
+    "arm": "stock",
+    "sha": "8ca92d57210494ebf4fe5c8469257a16a8ccc3b1",
+    "build": 109309
+  },
+  {
+    "run": 39,
+    "arm": "ours",
+    "sha": "3068be40e0c703140e72acab9e1f7fe1b2cede28",
+    "build": 109311
+  },
+  {
+    "run": 40,
+    "arm": "stock",
+    "sha": "1325d740578b72bf81e6e40b10930e7b0153dc10",
+    "build": 109312
+  }
+]
