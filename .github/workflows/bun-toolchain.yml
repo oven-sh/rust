@@ -39,7 +39,9 @@ on:
         required: false
   push:
     branches: ["nightly-*-bun"]
-    paths: ["bun/**", "!bun/README.md", "!bun/measurements/**", ".github/workflows/bun-toolchain.yml", "src/tools/opt-dist/**", "src/llvm-project"]
+    # everything on the branch goes into the toolchain (compiler/, library/, src/bootstrap, the
+    # llvm-project submodule, bun/) except the notes
+    paths-ignore: ["bun/README.md", "bun/measurements/**"]
 
 # A push supersedes the previous push's run on the branch; manually dispatched runs (subsets of
 # variants/halves) are their own groups and neither cancel nor get cancelled by anything else.
