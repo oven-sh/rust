@@ -48,10 +48,13 @@ pub fn compile_windows_resource_file(
 
     let res_path = resources_dir.join(file_stem.with_extension("res"));
 
+    // Relative names from inside the resources directory: llvm-rc on a non-Windows host (a cross
+    // build) reads an absolute path as an option when it begins like one (/checkout/... is /C).
     let status = process::Command::new(resource_compiler)
+        .current_dir(&resources_dir)
         .arg("/fo")
-        .arg(&res_path)
-        .arg(&rc_path)
+        .arg(res_path.file_name().unwrap())
+        .arg(rc_path.file_name().unwrap())
         .status()
         .expect("can execute resource compiler");
     assert!(status.success(), "rc.exe failed with status {}", status);
