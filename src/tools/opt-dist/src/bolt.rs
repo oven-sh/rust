@@ -2,9 +2,22 @@ use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::environment::Environment;
-use crate::exec::cmd;
+use crate::exec::{CmdBuilder, cmd};
 use crate::training::BoltProfile;
 use crate::utils::io::copy_file;
+
+/// `llvm-bolt`, for either of its runs over an artifact (instrumenting it, optimizing it).
+fn llvm_bolt(env: &Environment) -> CmdBuilder {
+    let bolt = cmd(&[env.llvm_bolt().as_str()]);
+    // rustc's aarch64 Linux targets link with --fix-cortex-a53-843419; llvm-bolt refuses a binary
+    // that has the linker's erratum veneers unless told to fold them back into their functions
+    // (its new layout invalidates the workaround either way).
+    if env.host_tuple().starts_with("aarch64") {
+        bolt.arg("--drop-cortex-a53-843419-veneers")
+    } else {
+        bolt
+    }
+}
 
 /// Instruments an artifact at the given `path` (in-place) with BOLT and then calls `func`.
 /// After this function finishes, the original file will be restored.
@@ -27,7 +40,7 @@ pub fn with_bolt_instrumented<F: FnOnce(&Utf8Path) -> anyhow::Result<R>, R>(
     let profile_prefix = Utf8Path::from_path(&profile_prefix).unwrap();
 
     // Instrument the original file with BOLT, saving the result into `instrumented_path`
-    cmd(&[env.llvm_bolt().as_str()])
+    llvm_bolt(env)
         .arg("-instrument")
         .arg(path)
         .arg(&format!("--instrumentation-file={profile_prefix}"))
@@ -62,7 +75,7 @@ pub fn bolt_optimize(
     let split_strategy =
         if env.host_tuple().starts_with("aarch64") { "profile2" } else { "cdsplit" };
 
-    cmd(&[env.llvm_bolt().as_str()])
+    llvm_bolt(env)
         .arg(temp_path.display())
         .arg("-data")
         .arg(&profile.0)
