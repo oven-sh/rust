@@ -1,0 +1,416 @@
+name: bun-toolchain
+
+# rustc + clang/lld built from this branch and src/llvm-project, one toolchain per host. See bun/README.md.
+#
+#   plan      what to build, and which of the next two GHCR does not have yet
+#   image     the build environment (bun/Dockerfile), per builder
+#   profile   the PGO profile of clang and lld (bun/lib/llvm-profile.ts), per builder
+#   llvm      per host: bun-toolchain-<host>-llvm.tar.zst
+#   rust      per host: bun-toolchain-<host>-rust.tar.zst
+#   smoke     per host: runs the two on a machine of that kind
+#   bun       per Linux host: builds Bun with the two, and runs some of its tests
+#   release   on nightly-*-bun: attaches every tarball + its toolchain-{llvm,rust}.json to one release
+#
+# image and profile depend on upstream's commits, not on our patches: most runs skip them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hosts:
+        description: "only toolchains for these hosts, comma-separated (linux-x64, linux-aarch64, darwin-aarch64, windows-x64, windows-aarch64); default all"
+        required: false
+      halves:
+        description: llvm, rust or llvm,rust (default both)
+        required: false
+      extra-args:
+        description: extra bun/toolchain.ts options for every job (e.g. --skip-bolt)
+        required: false
+  push:
+    # No path filter: with one, pushing a commit that passed under another name may not start a run.
+    branches: ["nightly-*-bun", "claude/**"]
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  PACKAGE: ghcr.io/${{ github.repository_owner }}/bun-toolchain-env
+  EXTRA_ARGS: ${{ inputs.extra-args }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    # Shared with `release`: waits for one that is under way, to number the next after it.
+    concurrency: release-${{ startsWith(github.ref, 'refs/heads/nightly-') && github.ref || github.run_id }}
+    outputs:
+      hosts: ${{ steps.plan.outputs.hosts }}
+      halves: ${{ steps.plan.outputs.halves }}
+      bun: ${{ steps.plan.outputs.bun }}
+      # tags of $PACKAGE, without -<builder>
+      image: ${{ steps.plan.outputs.image }}
+      profile: ${{ steps.plan.outputs.profile }}
+      missing-images: ${{ steps.plan.outputs.missing-images }}
+      missing-profiles: ${{ steps.plan.outputs.missing-profiles }}
+      release: ${{ steps.release.outputs.number }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { sparse-checkout: bun, fetch-depth: 1, persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 26 }
+      - id: plan
+        env:
+          HOSTS: ${{ inputs.hosts }}
+          HALVES: ${{ inputs.halves }}
+          IMAGE: ${{ hashFiles('bun/Dockerfile') }}
+          PROFILE: profile-${{ hashFiles('bun/Dockerfile', 'bun/lib/llvm-profile.ts') }}
+        run: |
+          matrix=$(node bun/toolchain.ts matrix ${HOSTS:+"--hosts=$HOSTS"} ${HALVES:+"--halves=$HALVES"})
+          echo "${{ github.token }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          missing() { # tag, jq path of the builders
+            jq -r "$2[]" <<<"$matrix" | while read -r builder; do
+              docker manifest inspect "$PACKAGE:$1-$builder" >/dev/null 2>&1 || echo "$builder"
+            done | jq -Rnc '[inputs]'
+          }
+          tee -a "$GITHUB_OUTPUT" <<EOF
+          hosts=$(jq -c .hosts <<<"$matrix")
+          halves=$(jq -c .halves <<<"$matrix")
+          bun=$(jq -c .bun <<<"$matrix")
+          nightly=$(jq -r .nightly <<<"$matrix")
+          image=$IMAGE
+          profile=$PROFILE
+          missing-images=$(missing "$IMAGE" .builders)
+          missing-profiles=$(missing "$PROFILE" .profiles)
+          EOF
+      # Releases are bun-toolchain-<branch>-<commit>-r<N>: numbered r1, r2, … per branch (a branch
+      # is one rustc nightly + its LLVM), in publication order. One per commit, complete, and never
+      # replaced: its files may be pinned by their sums.
+      - id: release
+        if: startsWith(github.ref, 'refs/heads/nightly-') && endsWith(github.ref, '-bun') && !inputs.hosts && !inputs.halves && !inputs.extra-args
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY: ${{ steps.plan.outputs.nightly }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "nightly-$NIGHTLY-bun" ]; then
+            echo "::error::NIGHTLY in bun/lib/upstream.ts is $NIGHTLY, on branch $GITHUB_REF_NAME"; exit 1
+          fi
+          prefix="bun-toolchain-${GITHUB_REF_NAME}-"
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[].tag_name | select(startswith(\"$prefix\") and test(\"-r[0-9]+\$\"))")
+          if grep "^${prefix}${GITHUB_SHA::8}-" <<<"$existing"; then exit 0; fi
+          last=$(sed -nE "s/^.*-r([0-9]+)$/\1/p" <<<"$existing" | sort -n | tail -n1)
+          n=$(( ${last:-0} + 1 ))
+          tee -a "$GITHUB_OUTPUT" <<EOF
+          number=$n
+          tag=${prefix}${GITHUB_SHA::8}-r$n
+          EOF
+
+  # This and `profile` are named by their inputs, so a newer run waits for them and finds them done.
+  image:
+    needs: plan
+    if: needs.plan.outputs.missing-images != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: ${{ fromJSON(needs.plan.outputs.missing-images) }}
+    name: image ${{ matrix.builder }}
+    concurrency: image-${{ needs.plan.outputs.image }}-${{ matrix.builder }}
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 120
+    permissions: { contents: read, packages: write }
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { sparse-checkout: bun, fetch-depth: 1, persist-credentials: false }
+      - name: Build on the layers of the last one, push
+        env:
+          TAG: ${{ needs.plan.outputs.image }}-${{ matrix.builder }}
+          LAST: last-${{ matrix.builder }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$PACKAGE:$TAG" >/dev/null 2>&1; then exit 0; fi
+          docker build --progress=plain --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from "$PACKAGE:$LAST" \
+            -t "$PACKAGE:$TAG" -t "$PACKAGE:$LAST" - < bun/Dockerfile
+          docker push "$PACKAGE:$TAG"
+          docker push "$PACKAGE:$LAST"
+      # Its builds would cancel those of the newer commit.
+      - name: Stop if the branch has moved on
+        if: github.event_name == 'push'
+        run: git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_REF" | grep "^$GITHUB_SHA"
+
+  profile:
+    needs: [plan, image]
+    if: ${{ !cancelled() && !failure() && !contains(needs.*.result, 'cancelled') && needs.plan.outputs.missing-profiles != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: ${{ fromJSON(needs.plan.outputs.missing-profiles) }}
+    name: profile ${{ matrix.builder }}
+    concurrency: ${{ needs.plan.outputs.profile }}-${{ matrix.builder }}
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 120
+    permissions: { contents: read, packages: write }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.profile }}-${{ matrix.builder }}
+    steps:
+      - id: done
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$PACKAGE:$TAG" >/dev/null 2>&1; then echo done=true >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.done.outputs.done != 'true'
+        with: { sparse-checkout: bun, fetch-depth: 1, persist-credentials: false }
+      - name: Record from upstream's commit of src/llvm-project
+        if: steps.done.outputs.done != 'true'
+        run: |
+          git init -q src/llvm-project
+          git -C src/llvm-project fetch -q --depth=1 https://github.com/oven-sh/llvm-project.git "$(sed -n 's/^ARG HOST_LLVM=//p' bun/Dockerfile)"
+          git -C src/llvm-project checkout -q FETCH_HEAD
+          bun/in-container.sh "$PACKAGE:${{ needs.plan.outputs.image }}-${{ matrix.builder }}" llvm-profile
+      # An image of files, for one stated platform: a builder also fetches the other's.
+      - name: Push
+        if: steps.done.outputs.done != 'true'
+        run: |
+          printf 'FROM scratch\nCOPY . /\n' | docker build --platform linux/amd64 -t "$PACKAGE:$TAG" -f - "obj/bun-toolchain/llvm-profile-${{ matrix.builder }}"
+          docker push "$PACKAGE:$TAG"
+      # Its builds would cancel those of the newer commit.
+      - name: Stop if the branch has moved on
+        if: github.event_name == 'push'
+        run: git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_REF" | grep "^$GITHUB_SHA"
+
+  # A push supersedes the previous push's builds on the branch; a dispatched run neither cancels nor is cancelled.
+  llvm:
+    needs: [plan, image, profile]
+    if: ${{ !cancelled() && !failure() && !contains(needs.*.result, 'cancelled') && contains(fromJSON(needs.plan.outputs.halves), 'llvm') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.hosts) }}
+    name: llvm ${{ matrix.host }}
+    concurrency:
+      group: llvm-${{ matrix.host }}-${{ github.ref }}-${{ github.event_name == 'push' && 'push' || github.run_id }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/bun-toolchain-env:${{ needs.plan.outputs.image }}-${{ matrix.builder }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            bun
+            src/llvm-project
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Fetch src/llvm-project
+        run: git submodule update --init --depth=1 src/llvm-project
+      - name: Fetch the profile
+        if: matrix.profile != ''
+        env:
+          TAG: ${{ needs.plan.outputs.profile }}-${{ matrix.profile }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          dir="obj/bun-toolchain/llvm-profile-${{ matrix.profile }}"
+          mkdir -p "$dir"
+          id=$(docker create --platform linux/amd64 "$PACKAGE:$TAG" -)
+          for file in clang.profdata clang-profile.json; do docker cp "$id:/$file" "$dir/"; done
+      - name: Build
+        run: bun/in-container.sh "$IMAGE" llvm --host=${{ matrix.host }} $EXTRA_ARGS
+      - name: Package
+        run: bun/in-container.sh "$IMAGE" package --host=${{ matrix.host }} ${RELEASE:+"--release=$RELEASE"} $EXTRA_ARGS
+        env:
+          RELEASE: ${{ needs.plan.outputs.release }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bun-toolchain-${{ matrix.host }}-llvm
+          path: |
+            obj/bun-toolchain/out/*-llvm.tar.zst
+            obj/bun-toolchain/out/*-llvm/toolchain-llvm.json
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  rust:
+    needs: [plan, image]
+    if: ${{ !cancelled() && !failure() && !contains(needs.*.result, 'cancelled') && contains(fromJSON(needs.plan.outputs.halves), 'rust') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.hosts) }}
+    name: rust ${{ matrix.host }}
+    concurrency:
+      group: rust-${{ matrix.host }}-${{ github.ref }}-${{ github.event_name == 'push' && 'push' || github.run_id }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.builder == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/bun-toolchain-env:${{ needs.plan.outputs.image }}-${{ matrix.builder }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 1, persist-credentials: false }
+      - name: Fetch src/llvm-project
+        run: git submodule update --init --depth=1 src/llvm-project
+      - name: Build
+        run: bun/in-container.sh "$IMAGE" rust --host=${{ matrix.host }} $EXTRA_ARGS
+      - name: Package
+        run: bun/in-container.sh "$IMAGE" package --host=${{ matrix.host }} ${RELEASE:+"--release=$RELEASE"} $EXTRA_ARGS
+        env:
+          RELEASE: ${{ needs.plan.outputs.release }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bun-toolchain-${{ matrix.host }}-rust
+          path: |
+            obj/bun-toolchain/out/*-rust.tar.zst
+            obj/bun-toolchain/out/*-rust/toolchain-rust.json
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  smoke:
+    needs: [plan, llvm, rust]
+    # Also when another host's build failed.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.llvm.result != 'skipped' || needs.rust.result != 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.hosts) }}
+    name: smoke ${{ matrix.host }}
+    runs-on: ${{ fromJSON('{"linux-x64":"ubuntu-24.04","linux-aarch64":"ubuntu-24.04-arm","darwin-aarch64":"macos-15","windows-x64":"windows-2025","windows-aarch64":"windows-11-arm"}')[matrix.host] }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { sparse-checkout: bun, fetch-depth: 1, persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 26 }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bun-toolchain-${{ matrix.host }}-*
+          path: artifacts
+          merge-multiple: true
+      - name: On the oldest Linux it is for, with only a C and C++ library to link to
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -v "$(dirname "$(dirname "$(command -v node)")"):/node:ro" ubuntu:20.04 sh -ec '
+            apt-get -qq -o Acquire::Retries=5 update
+            apt-get -qq -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates gcc libc6-dev libstdc++-9-dev libatomic1 >/dev/null
+            /node/bin/node bun/smoke.ts /tmp/smoke artifacts/*.tar.zst'
+      - if: runner.os != 'Linux'
+        run: node bun/smoke.ts "$RUNNER_TEMP/smoke" artifacts/*.tar.zst
+
+  bun:
+    needs: [plan, llvm, rust]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && needs.llvm.result != 'skipped' && needs.rust.result != 'skipped' && fromJSON(needs.plan.outputs.bun).hosts[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(needs.plan.outputs.bun).hosts }}
+    name: bun ${{ matrix.host }}
+    concurrency:
+      group: bun-${{ matrix.host }}-${{ github.ref }}-${{ github.event_name == 'push' && 'push' || github.run_id }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.host == 'linux-x64' && 'linux-x64-gh' || 'linux-arm64-gh' }}
+    timeout-minutes: 45
+    env:
+      BUN_TOOLCHAIN_LLVM: ${{ github.workspace }}/toolchain
+      BUN_TOOLCHAIN_RUST: ${{ github.workspace }}/toolchain
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: oven-sh/bun
+          ref: ${{ fromJSON(needs.plan.outputs.bun).ref }}
+          path: bun
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 26 }
+      - uses: ./bun/.github/actions/setup-bun
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bun-toolchain-${{ matrix.host }}-*
+          path: artifacts
+          merge-multiple: true
+      - name: Install
+        run: |
+          mkdir toolchain
+          for tarball in artifacts/*.tar.zst; do tar -I zstd -xf "$tarball" -C toolchain --strip-components=1; done
+          # The arm64 runners are Ubuntu 22.04, which stops at GCC 12.
+          apt-cache show libstdc++-13-dev >/dev/null 2>&1 || sudo add-apt-repository -yn ppa:ubuntu-toolchain-r/test
+          sudo apt-get -qq -o Acquire::Retries=5 update
+          sudo apt-get -qq -o Acquire::Retries=5 install -y --no-install-recommends build-essential libstdc++-13-dev cmake nasm perl python3 >/dev/null
+      - name: Build
+        working-directory: bun
+        run: node scripts/build.ts --profile=release --trimmable=on --timings && ls -l build/release/bun
+      - name: Test
+        working-directory: bun
+        env:
+          BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING: "1"
+          BUN_GARBAGE_COLLECTOR_LEVEL: "1"
+        run: |
+          bun install --cwd test --ignore-scripts
+          for test in \
+            bundler/bundler_minify bundler/esbuild/default bundler/transpiler/transpiler \
+            js/bun/http/serve.test js/bun/sqlite/sqlite.test js/bun/util/hash js/bun/util/inspect.test \
+            js/node/buffer.test js/node/crypto/crypto.test js/node/fs/fs.test js/node/path/ js/node/zlib/zlib.test \
+            js/web/encoding/ js/web/intl/ js/web/url/
+          do
+            build/release/bun test --timeout=60000 --reporter=dots "test/$test"
+          done
+
+  release:
+    needs: [plan, llvm, rust, smoke, bun]
+    # A job that ran out of time is cancelled, which failure() does not see.
+    if: ${{ !cancelled() && needs.plan.outputs.tag != '' && needs.llvm.result == 'success' && needs.rust.result == 'success' && needs.smoke.result == 'success' && needs.bun.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency: release-${{ github.ref }}
+    permissions: { contents: write, packages: write }
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bun-toolchain-*
+          path: artifacts
+          merge-multiple: true
+      # <name>.tar.zst and <name>/toolchain-{llvm,rust}.json (upload-artifact roots them at their
+      # common directory, obj/bun-toolchain/out).
+      - name: Collect assets
+        run: |
+          mkdir assets
+          for tarball in artifacts/*.tar.zst; do
+            name=$(basename "$tarball" .tar.zst)
+            mv "$tarball" assets/
+            mv "artifacts/$name"/toolchain-*.json "assets/$name.json"
+          done
+          ls -l assets
+      - name: Create release
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE: ${{ needs.plan.outputs.release }}
+        run: |
+          git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_REF" | grep "^$GITHUB_SHA" ||
+            { echo "::error::the branch has moved on, and r$RELEASE is for the newer commit"; exit 1; }
+          # A draft until every file is uploaded.
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" assets/* \
+            --notes "Release r$RELEASE of the Bun toolchain on $GITHUB_REF_NAME: rustc/cargo + clang/lld for building Bun, built from $GITHUB_SHA by bun/toolchain.ts. One pair of tarballs per host: bun-toolchain-<host>-{llvm,rust}.tar.zst; the .json next to each says what it was built from."
+      # A branch that still wants one builds it again.
+      - name: Delete old images and profiles this run did not use
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+          PROFILE: ${{ needs.plan.outputs.profile }}
+        run: |
+          versions="/orgs/$GITHUB_REPOSITORY_OWNER/packages/container/bun-toolchain-env/versions"
+          gh api --paginate "$versions" --jq '.[]
+            | select(now - (.created_at | fromdate) > 30 * 86400)
+            | select(.metadata.container.tags | length > 0 and (any(startswith(env.IMAGE) or startswith(env.PROFILE) or startswith("last-")) | not))
+            | .id' |
+          while read -r id; do
+            echo "deleting package version $id"
+            gh api -X DELETE "$versions/$id" || true
+          done

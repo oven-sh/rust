@@ -1,0 +1,2 @@
+[*.{ts,json}]
+indent_size = 2
